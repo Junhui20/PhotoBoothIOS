@@ -254,11 +254,13 @@ extension CameraManager: @preconcurrency ICCameraDeviceDelegate {
         logger.debug("Status update received")
     }
 
-    nonisolated func deviceDidBecomeReady(withCompleteContentCatalog device: ICDevice) {
+    nonisolated func deviceDidBecomeReady(withCompleteContentCatalog device: ICCameraDevice) {
         logger.info("Camera ready with complete catalog")
     }
 
-    nonisolated func cameraDeviceDidRemoveAccessRestriction(_ camera: ICCameraDevice) {}
+    nonisolated func cameraDeviceDidRemoveAccessRestriction(_ device: ICDevice) {}
+
+    nonisolated func cameraDeviceDidEnableAccessRestriction(_ device: ICDevice) {}
 
     nonisolated func cameraDevice(_ camera: ICCameraDevice, shouldGetThumbnailOf item: ICCameraItem) -> Bool { false }
 
