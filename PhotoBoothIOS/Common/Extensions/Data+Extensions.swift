@@ -1,6 +1,8 @@
 import Foundation
 
-extension Data {
+// All methods are nonisolated — Data is a value type, safe to use from any context.
+// The project default MainActor isolation must not apply to these pure helpers.
+nonisolated extension Data {
 
     // MARK: - Safe Little-Endian Reads (byte-by-byte, no alignment issues)
 

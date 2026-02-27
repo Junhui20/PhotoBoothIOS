@@ -102,20 +102,13 @@ final class CameraManager: NSObject, ObservableObject {
                     return
                 }
 
-                // Bug #2 fix: the actual payload is often in ptpResponseData, not responseData
-                let data: Data
-                if let ptpData = ptpResponseData {
-                    data = ptpData
-                } else if let respData = responseData {
-                    data = respData
-                } else {
-                    data = Data()
-                }
+                // Bug #2 fix: prefer ptpResponseData (actual payload) over responseData (PTP header)
+                let data = ptpResponseData.isEmpty ? responseData : ptpResponseData
 
                 self?.logger.debug("PTP RX [\(data.count) bytes] \(data.hexPrefix(64))")
 
-                if let respData = responseData, respData.count >= 8 {
-                    let respCode = respData.readUInt16(at: 6)
+                if responseData.count >= 8 {
+                    let respCode = responseData.readUInt16(at: 6)
                     self?.logger.debug("PTP response code: 0x\(String(respCode, radix: 16))")
                 }
 
