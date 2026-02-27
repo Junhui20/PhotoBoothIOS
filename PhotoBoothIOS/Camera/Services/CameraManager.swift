@@ -17,7 +17,7 @@ final class CameraManager: NSObject, ObservableObject {
 
     // MARK: - Private
 
-    private let logger = Logger(subsystem: "com.instamedia.photoboothios", category: "CameraManager")
+    private nonisolated let logger = Logger(subsystem: "com.instamedia.photoboothios", category: "CameraManager")
     private var deviceBrowser: ICDeviceBrowser?
     private var cameraDevice: ICCameraDevice?
     private var transactionID: UInt32 = 0
@@ -103,7 +103,14 @@ final class CameraManager: NSObject, ObservableObject {
                 }
 
                 // Bug #2 fix: the actual payload is often in ptpResponseData, not responseData
-                let data = ptpResponseData ?? responseData ?? Data()
+                let data: Data
+                if let ptpData = ptpResponseData {
+                    data = ptpData
+                } else if let respData = responseData {
+                    data = respData
+                } else {
+                    data = Data()
+                }
 
                 self?.logger.debug("PTP RX [\(data.count) bytes] \(data.hexPrefix(64))")
 
@@ -143,7 +150,6 @@ final class CameraManager: NSObject, ObservableObject {
 
         } catch {
             logger.error("GetDeviceInfo failed: \(error.localizedDescription)")
-            // Still mark as connected — session is open, just couldn't read extended info
             deviceInfo.isConnected = true
             connectionState = .connected
         }
@@ -155,20 +161,23 @@ final class CameraManager: NSObject, ObservableObject {
 extension CameraManager: @preconcurrency ICDeviceBrowserDelegate {
 
     nonisolated func deviceBrowser(_ browser: ICDeviceBrowser, didAdd device: ICDevice, moreComing: Bool) {
-        Task {
-            logger.info("Device found: \(device.name ?? "Unknown"), type: \(device.type.rawValue)")
+        let deviceName = device.name ?? "Unknown"
+        let deviceType = device.type
 
-            guard device.type == .camera, let camera = device as? ICCameraDevice else {
+        Task { @MainActor in
+            logger.info("Device found: \(deviceName), type: \(deviceType.rawValue)")
+
+            guard deviceType == .camera, let camera = device as? ICCameraDevice else {
                 logger.info("Skipping non-camera device")
                 return
             }
 
-            logger.info("Canon camera found: \(camera.name ?? "Unknown")")
+            logger.info("Canon camera found: \(deviceName)")
 
             cameraDevice = camera
             camera.delegate = self
-            deviceInfo.name = camera.name ?? "Canon Camera"
-            connectionState = .found(camera.name ?? "Unknown")
+            deviceInfo.name = deviceName
+            connectionState = .found(deviceName)
 
             camera.requestOpenSession()
             connectionState = .openingSession
@@ -176,16 +185,16 @@ extension CameraManager: @preconcurrency ICDeviceBrowserDelegate {
     }
 
     nonisolated func deviceBrowser(_ browser: ICDeviceBrowser, didRemove device: ICDevice, moreGoing: Bool) {
-        Task {
-            logger.info("Device removed: \(device.name ?? "Unknown")")
+        let deviceName = device.name ?? "Unknown"
 
-            if device == cameraDevice {
-                cameraDevice?.delegate = nil
-                cameraDevice = nil
-                transactionID = 0
-                connectionState = .disconnected
-                deviceInfo = CameraDeviceInfo()
-            }
+        Task { @MainActor in
+            logger.info("Device removed: \(deviceName)")
+
+            cameraDevice?.delegate = nil
+            cameraDevice = nil
+            transactionID = 0
+            connectionState = .disconnected
+            deviceInfo = CameraDeviceInfo()
         }
     }
 }
@@ -195,22 +204,22 @@ extension CameraManager: @preconcurrency ICDeviceBrowserDelegate {
 extension CameraManager: @preconcurrency ICCameraDeviceDelegate {
 
     nonisolated func device(_ device: ICDevice, didOpenSessionWithError error: (any Error)?) {
-        Task {
+        let deviceName = device.name ?? "Unknown"
+
+        Task { @MainActor in
             if let error {
                 logger.error("Session open failed: \(error.localizedDescription)")
                 connectionState = .error(error.localizedDescription)
                 return
             }
 
-            logger.info("PTP session opened for: \(device.name ?? "Unknown")")
-
-            // Read camera identity
+            logger.info("PTP session opened for: \(deviceName)")
             await readDeviceInfo()
         }
     }
 
     nonisolated func device(_ device: ICDevice, didCloseSessionWithError error: (any Error)?) {
-        Task {
+        Task { @MainActor in
             logger.info("PTP session closed")
             connectionState = .disconnected
             deviceInfo.isConnected = false
@@ -218,13 +227,11 @@ extension CameraManager: @preconcurrency ICCameraDeviceDelegate {
     }
 
     nonisolated func deviceDidBecomeReady(_ device: ICDevice) {
-        Task {
-            logger.info("Camera ready: \(device.name ?? "Unknown")")
-        }
+        logger.info("Camera ready: \(device.name ?? "Unknown")")
     }
 
     nonisolated func didRemove(_ device: ICDevice) {
-        Task {
+        Task { @MainActor in
             logger.info("Camera physically removed")
             cameraDevice?.delegate = nil
             cameraDevice = nil
@@ -235,26 +242,30 @@ extension CameraManager: @preconcurrency ICCameraDeviceDelegate {
     }
 
     nonisolated func cameraDevice(_ camera: ICCameraDevice, didAdd items: [ICCameraItem]) {
-        Task {
-            logger.debug("Camera added \(items.count) items")
-        }
+        logger.debug("Camera added \(items.count) items")
     }
 
     nonisolated func cameraDevice(_ camera: ICCameraDevice, didRemove items: [ICCameraItem]) {
-        Task {
-            logger.debug("Camera removed \(items.count) items")
-        }
+        logger.debug("Camera removed \(items.count) items")
     }
 
     nonisolated func cameraDevice(_ camera: ICCameraDevice, didReceiveThumbnail thumbnail: CGImage?, for item: ICCameraItem, error: (any Error)?) {}
 
-    nonisolated func cameraDevice(_ camera: ICCameraDevice, didReceiveMetadata metadata: [String: Any]?, for item: ICCameraItem, error: (any Error)?) {}
+    nonisolated func cameraDevice(_ camera: ICCameraDevice, didReceiveMetadata metadata: [AnyHashable: Any]?, for item: ICCameraItem, error: (any Error)?) {}
+
+    nonisolated func cameraDevice(_ camera: ICCameraDevice, didReceivePTPEvent eventData: Data) {
+        logger.debug("PTP event: \(eventData.hexPrefix(32))")
+    }
 
     nonisolated func device(_ device: ICDevice, didReceiveStatusInformation status: [ICDeviceStatus: Any]) {
-        Task {
-            logger.debug("Status update: \(status)")
-        }
+        logger.debug("Status update received")
     }
+
+    nonisolated func deviceDidBecomeReady(withCompleteContentCatalog device: ICDevice) {
+        logger.info("Camera ready with complete catalog")
+    }
+
+    nonisolated func cameraDeviceDidRemoveAccessRestriction(_ camera: ICCameraDevice) {}
 
     nonisolated func cameraDevice(_ camera: ICCameraDevice, shouldGetThumbnailOf item: ICCameraItem) -> Bool { false }
 
