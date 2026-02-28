@@ -29,6 +29,7 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     /// Start scanning for USB cameras.
+    /// Requests iOS 14+ control authorization first, then starts the device browser.
     func startScanning() {
         guard deviceBrowser == nil else {
             logger.info("Already scanning")
@@ -44,10 +45,32 @@ final class CameraManager: NSObject, ObservableObject {
         browser.browsedDeviceTypeMask = ICDeviceTypeMask(rawValue:
             ICDeviceTypeMask.camera.rawValue | ICDeviceLocationTypeMask.local.rawValue
         )!
-        browser.start()
         deviceBrowser = browser
 
-        logger.info("Device browser started")
+        // iOS 14+: Must request control authorization before camera will respond
+        let controlStatus = browser.controlAuthorizationStatus
+        logger.info("Control authorization status: \(String(describing: controlStatus))")
+
+        if controlStatus == .notDetermined {
+            browser.requestControlAuthorization { [weak self] status in
+                self?.logger.info("Control authorization result: \(String(describing: status))")
+                Task { @MainActor in
+                    if status == .authorized {
+                        browser.start()
+                        self?.logger.info("Device browser started after authorization")
+                    } else {
+                        self?.connectionState = .error("Camera control permission denied")
+                        self?.logger.error("Camera control authorization denied")
+                    }
+                }
+            }
+        } else if controlStatus == .authorized {
+            browser.start()
+            logger.info("Device browser started (already authorized)")
+        } else {
+            connectionState = .error("Camera control permission denied")
+            logger.error("Camera control not authorized: \(String(describing: controlStatus))")
+        }
     }
 
     /// Stop scanning and disconnect.
