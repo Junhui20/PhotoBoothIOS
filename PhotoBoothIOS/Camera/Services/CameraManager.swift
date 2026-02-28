@@ -230,7 +230,8 @@ extension CameraManager: ICCameraDeviceDelegate {
             }
 
             logger.info("PTP session opened for: \(deviceName)")
-            await readDeviceInfo()
+            // On iOS, PTP commands can only be sent after deviceDidBecomeReady(withCompleteContentCatalog:)
+            // So we just log here and wait for that callback to send GetDeviceInfo
         }
     }
 
@@ -278,7 +279,11 @@ extension CameraManager: ICCameraDeviceDelegate {
     }
 
     nonisolated func deviceDidBecomeReady(withCompleteContentCatalog device: ICCameraDevice) {
-        logger.info("Camera ready with complete catalog")
+        logger.info("Camera ready with complete catalog — now safe to send PTP commands")
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.readDeviceInfo()
+        }
     }
 
     nonisolated func cameraDeviceDidRemoveAccessRestriction(_ device: ICDevice) {}
