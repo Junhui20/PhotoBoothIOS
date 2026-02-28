@@ -151,16 +151,15 @@ final class CameraManager: NSObject, ObservableObject {
 
 // MARK: - ICDeviceBrowserDelegate
 
-extension CameraManager: @preconcurrency ICDeviceBrowserDelegate {
+extension CameraManager: ICDeviceBrowserDelegate {
 
     nonisolated func deviceBrowser(_ browser: ICDeviceBrowser, didAdd device: ICDevice, moreComing: Bool) {
         let deviceName = device.name ?? "Unknown"
-        let deviceType = device.type
 
         Task { @MainActor in
-            logger.info("Device found: \(deviceName), type: \(deviceType.rawValue)")
+            logger.info("Device found: \(deviceName), type: \(device.type.rawValue)")
 
-            guard deviceType == .camera, let camera = device as? ICCameraDevice else {
+            guard let camera = device as? ICCameraDevice else {
                 logger.info("Skipping non-camera device")
                 return
             }
@@ -194,7 +193,7 @@ extension CameraManager: @preconcurrency ICDeviceBrowserDelegate {
 
 // MARK: - ICCameraDeviceDelegate
 
-extension CameraManager: @preconcurrency ICCameraDeviceDelegate {
+extension CameraManager: ICCameraDeviceDelegate {
 
     nonisolated func device(_ device: ICDevice, didOpenSessionWithError error: (any Error)?) {
         let deviceName = device.name ?? "Unknown"
