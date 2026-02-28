@@ -52,15 +52,16 @@ final class CameraManager: NSObject, ObservableObject {
         logger.info("Control authorization status: \(String(describing: controlStatus))")
 
         if controlStatus == .notDetermined {
-            browser.requestControlAuthorization { [weak self] status in
-                self?.logger.info("Control authorization result: \(String(describing: status))")
-                Task { @MainActor in
+            browser.requestControlAuthorization { status in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.logger.info("Control authorization result: \(String(describing: status))")
                     if status == .authorized {
                         browser.start()
-                        self?.logger.info("Device browser started after authorization")
+                        self.logger.info("Device browser started after authorization")
                     } else {
-                        self?.connectionState = .error("Camera control permission denied")
-                        self?.logger.error("Camera control authorization denied")
+                        self.connectionState = .error("Camera control permission denied")
+                        self.logger.error("Camera control authorization denied")
                     }
                 }
             }
