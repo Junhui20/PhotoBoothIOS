@@ -27,6 +27,10 @@ final class CameraManager: NSObject, ObservableObject {
     private var transactionID: UInt32 = 0
     private var liveViewTask: Task<Void, Never>?
 
+    /// Files added by the camera (set via `cameraDevice(_:didAdd:)` delegate).
+    /// Cleared before each capture, populated when camera writes a new image.
+    private var pendingCaptureFiles: [ICCameraFile] = []
+
     // MARK: - Lifecycle
 
     override init() {
@@ -370,13 +374,21 @@ final class CameraManager: NSObject, ObservableObject {
             try? await Task.sleep(nanoseconds: 200_000_000)
         }
 
+        // Clear pending files so we detect only NEW files from this capture
+        pendingCaptureFiles.removeAll()
+
         logger.info("Starting capture sequence…")
 
+        // Step 1: Fire the shutter
+        let shutterFired = await triggerShutter()
+
         let photo: CapturedPhoto
-        do {
-            photo = try await captureViaRemoteRelease()
-        } catch {
-            logger.warning("RemoteRelease failed, trying InitiateCapture: \(error.localizedDescription)")
+        if shutterFired {
+            // Step 2: Download the captured image (multiple strategies)
+            photo = try await downloadCapturedImage()
+        } else {
+            // Shutter commands all failed — try standard PTP InitiateCapture as last resort
+            logger.warning("All shutter commands failed, trying InitiateCapture…")
             photo = try await captureViaInitiateCapture()
         }
 
@@ -392,78 +404,148 @@ final class CameraManager: NSObject, ObservableObject {
         return photo
     }
 
-    /// Canon-specific capture via RemoteReleaseOn/Off.
-    /// Strategy: try immediate capture first, then separate focus+release with busy retry.
-    private func captureViaRemoteRelease() async throws -> CapturedPhoto {
+    // MARK: - Shutter Trigger
+
+    /// Fire the shutter via Canon RemoteReleaseOn. Returns true if shutter triggered.
+    private func triggerShutter() async -> Bool {
         // Strategy 1: Immediate capture (focus + release combined, param=3)
-        var shutterTriggered = false
         do {
             _ = try await sendPTPCommand(
                 opCode: CanonPTP.CanonOpCode.remoteReleaseOn.rawValue,
                 params: [CanonPTP.ReleaseParam.immediate.rawValue, 0x00]
             )
-            logger.info("RemoteReleaseOn(immediate) succeeded — shutter fired")
-            shutterTriggered = true
-        } catch {
-            logger.info("Immediate capture not supported, trying focus + release…")
+            logger.info("RemoteReleaseOn(immediate) — shutter fired ✓")
 
-            // Strategy 2: Separate half-press (AF) then full-press (release)
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            _ = try? await sendPTPCommand(
+                opCode: CanonPTP.CanonOpCode.remoteReleaseOff.rawValue,
+                params: [0x03]
+            )
+            return true
+        } catch {
+            logger.info("Immediate capture failed (0x\(String(format: "%04X", CanonPTP.ReleaseParam.immediate.rawValue))), trying focus + release…")
+        }
+
+        // Strategy 2: Separate half-press (AF) then full-press (release)
+        do {
+            _ = try await sendPTPCommand(
+                opCode: CanonPTP.CanonOpCode.remoteReleaseOn.rawValue,
+                params: [CanonPTP.ReleaseParam.focus.rawValue, 0x00]
+            )
+            logger.info("RemoteReleaseOn(focus) — AF started ✓")
+        } catch {
+            logger.error("RemoteReleaseOn(focus) failed: \(error.localizedDescription)")
+            return false
+        }
+
+        // Wait for AF to lock (was 300ms → Busy; now 800ms)
+        try? await Task.sleep(nanoseconds: 800_000_000)
+
+        // Full press with retry on DeviceBusy (0x2019)
+        for attempt in 1...5 {
             do {
                 _ = try await sendPTPCommand(
                     opCode: CanonPTP.CanonOpCode.remoteReleaseOn.rawValue,
-                    params: [CanonPTP.ReleaseParam.focus.rawValue, 0x00]
+                    params: [CanonPTP.ReleaseParam.release.rawValue, 0x00]
                 )
-                logger.info("RemoteReleaseOn(focus) succeeded — AF started")
-                shutterTriggered = true // AF half-press may trigger capture on some cameras
+                logger.info("RemoteReleaseOn(release) succeeded on attempt \(attempt) ✓")
+                break
             } catch {
-                logger.warning("RemoteReleaseOn(focus) failed: \(error.localizedDescription)")
-                throw error
-            }
-
-            // Wait longer for AF to lock (300ms was too short → 0x2019 Busy)
-            try await Task.sleep(nanoseconds: 800_000_000)
-
-            // Full press with retry on DeviceBusy (0x2019)
-            for attempt in 1...5 {
-                do {
-                    _ = try await sendPTPCommand(
-                        opCode: CanonPTP.CanonOpCode.remoteReleaseOn.rawValue,
-                        params: [CanonPTP.ReleaseParam.release.rawValue, 0x00]
-                    )
-                    logger.info("RemoteReleaseOn(release) succeeded on attempt \(attempt)")
-                    break
-                } catch {
-                    logger.warning("Release attempt \(attempt)/5 failed: \(error.localizedDescription)")
-                    if attempt < 5 {
-                        try await Task.sleep(nanoseconds: 400_000_000)
-                    }
-                    // Don't re-throw — camera may have already captured from half-press
+                logger.warning("Release attempt \(attempt)/5: \(error.localizedDescription)")
+                if attempt < 5 {
+                    try? await Task.sleep(nanoseconds: 400_000_000)
                 }
             }
         }
 
-        try await Task.sleep(nanoseconds: 300_000_000)
-
-        // Release shutter button (fire-and-forget)
+        try? await Task.sleep(nanoseconds: 300_000_000)
         _ = try? await sendPTPCommand(
             opCode: CanonPTP.CanonOpCode.remoteReleaseOff.rawValue,
             params: [0x03]
         )
 
-        // Always try to download — camera may have captured even if release failed
-        guard shutterTriggered else {
-            throw PhotoBoothError.ptpCommandFailed("Shutter never triggered")
-        }
-        return try await waitForCaptureAndDownload()
+        return true // AF half-press likely triggered capture even if full-press was busy
     }
 
-    /// Standard PTP fallback capture.
+    // MARK: - Image Download (Multi-Strategy)
+
+    /// Download the just-captured image using multiple fallback strategies.
+    private func downloadCapturedImage() async throws -> CapturedPhoto {
+        // Strategy 1: Wait for ICCameraDevice didAdd delegate (ImageCaptureCore file system)
+        // This is the most reliable — Apple handles PTP transfer internally
+        logger.info("Waiting for captured file via ImageCaptureCore…")
+        for poll in 1...50 { // up to 10 seconds (50 × 200ms)
+            if let file = pendingCaptureFiles.last {
+                logger.info("File detected via IC delegate: \(file.name ?? "?") (\(file.fileSize) bytes)")
+                return try await downloadViaICFramework(file: file)
+            }
+            if poll % 10 == 0 {
+                logger.debug("IC file poll \(poll)/50 — waiting for didAdd…")
+            }
+            try await Task.sleep(nanoseconds: 200_000_000)
+        }
+        logger.warning("No file via IC delegate after 10s")
+
+        // Strategy 2: Poll GetEvent for ObjectAdded (PTP-level events)
+        logger.info("Trying PTP GetEvent polling…")
+        for poll in 1...15 {
+            if let eventData = try? await sendPTPCommand(
+                opCode: CanonPTP.CanonOpCode.getEvent.rawValue
+            ), !eventData.isEmpty {
+                if let handle = parseObjectAddedEvent(from: eventData) {
+                    logger.info("ObjectAdded event: handle 0x\(String(handle, radix: 16))")
+                    return try await downloadObject(handle: handle)
+                }
+            }
+            logger.debug("GetEvent poll \(poll)/15 — no ObjectAdded")
+            try await Task.sleep(nanoseconds: 300_000_000)
+        }
+
+        // Strategy 3: Get latest object handle (brute force)
+        logger.warning("No events — trying GetObjectHandles for latest file…")
+        return try await downloadLatestImage()
+    }
+
+    /// Download a file using Apple's ImageCaptureCore framework (not raw PTP).
+    /// Uses `ICCameraFile.requestReadData` which handles PTP transfer internally.
+    private func downloadViaICFramework(file: ICCameraFile) async throws -> CapturedPhoto {
+        logger.info("Downloading via IC framework: \(file.name ?? "?"), size=\(file.fileSize)")
+
+        let data: Data = try await withCheckedThrowingContinuation { continuation in
+            file.requestReadData(atOffset: 0, length: file.fileSize) { readData, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if let readData, !readData.isEmpty {
+                    continuation.resume(returning: readData)
+                } else {
+                    continuation.resume(throwing: PhotoBoothError.imageDownloadFailed)
+                }
+            }
+        }
+
+        logger.info("IC download complete: \(data.count) bytes")
+
+        // Extract JPEG if wrapped in container, or use directly
+        let imageData = data.findJPEGData() ?? data
+        guard let image = UIImage(data: imageData) else {
+            throw PhotoBoothError.imageDownloadFailed
+        }
+
+        return CapturedPhoto(
+            imageData: imageData,
+            timestamp: .now,
+            width: Int(image.size.width),
+            height: Int(image.size.height)
+        )
+    }
+
+    /// Standard PTP fallback capture (only used when Canon remote commands all fail).
     private func captureViaInitiateCapture() async throws -> CapturedPhoto {
         _ = try await sendPTPCommand(
             opCode: CanonPTP.OpCode.initiateCapture.rawValue,
             params: [0x00000000, 0x00000000]
         )
-        try await Task.sleep(nanoseconds: 1_500_000_000) // wait for image
+        try await Task.sleep(nanoseconds: 1_500_000_000)
         return try await downloadLatestImage()
     }
 
@@ -476,7 +558,7 @@ final class CameraManager: NSObject, ObservableObject {
 
             if let eventData = try? await sendPTPCommand(
                 opCode: CanonPTP.CanonOpCode.getEvent.rawValue
-            ) {
+            ), !eventData.isEmpty {
                 if let handle = parseObjectAddedEvent(from: eventData) {
                     logger.info("ObjectAdded event: handle 0x\(String(handle, radix: 16))")
                     return try await downloadObject(handle: handle)
@@ -486,7 +568,6 @@ final class CameraManager: NSObject, ObservableObject {
             logger.debug("GetEvent poll \(poll + 1)/\(maxPolls) — no ObjectAdded yet")
         }
 
-        // Fallback: no event received, try downloading the latest file
         logger.warning("No ObjectAdded event — falling back to latest handle")
         return try await downloadLatestImage()
     }
@@ -678,7 +759,17 @@ extension CameraManager: ICCameraDeviceDelegate {
     }
 
     nonisolated func cameraDevice(_ camera: ICCameraDevice, didAdd items: [ICCameraItem]) {
-        logger.debug("Camera added \(items.count) items")
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            for item in items {
+                if let file = item as? ICCameraFile {
+                    self.logger.info("📸 New file on camera: \(file.name ?? "unnamed"), size=\(file.fileSize)")
+                    self.pendingCaptureFiles.append(file)
+                } else {
+                    self.logger.debug("Camera added non-file item: \(item.name ?? "?")")
+                }
+            }
+        }
     }
 
     nonisolated func cameraDevice(_ camera: ICCameraDevice, didRemove items: [ICCameraItem]) {
@@ -690,7 +781,8 @@ extension CameraManager: ICCameraDeviceDelegate {
     nonisolated func cameraDevice(_ camera: ICCameraDevice, didReceiveMetadata metadata: [AnyHashable: Any]?, for item: ICCameraItem, error: (any Error)?) {}
 
     nonisolated func cameraDevice(_ camera: ICCameraDevice, didReceivePTPEvent eventData: Data) {
-        logger.debug("PTP event: \(eventData.hexPrefix(32))")
+        // PTP events arrive via the interrupt endpoint (separate from GetEvent polling)
+        logger.info("PTP interrupt event [\(eventData.count) bytes]: \(eventData.hexPrefix(64))")
     }
 
     nonisolated func device(_ device: ICDevice, didReceiveStatusInformation status: [ICDeviceStatus: Any]) {
