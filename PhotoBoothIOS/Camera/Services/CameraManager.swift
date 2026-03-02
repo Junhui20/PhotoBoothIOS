@@ -630,14 +630,77 @@ final class CameraManager: NSObject, ObservableObject {
     // MARK: - Shutter Trigger
 
     /// Fire the shutter via Canon RemoteReleaseOn. Returns true if shutter triggered.
+    ///
+    /// Strategy 1 (primary): Half-press for AF → poll GetEvent for AF result → full-press
+    /// Strategy 2 (fallback): Immediate mode (param=3) — may skip AF
     private func triggerShutter() async -> Bool {
-        // Strategy 1: Immediate capture (focus + release combined, param=3)
+        // Strategy 1: Proper AF → Release sequence
+        do {
+            // Half-press to start autofocus
+            _ = try await sendPTPCommand(
+                opCode: CanonPTP.CanonOpCode.remoteReleaseOn.rawValue,
+                params: [CanonPTP.ReleaseParam.focus.rawValue, 0x00]
+            )
+            logger.info("RemoteReleaseOn(focus) — AF started")
+
+            // Poll GetEvent for AF result (0xC18F) — up to 3 seconds
+            var afConfirmed = false
+            for poll in 1...30 {
+                try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+
+                if let eventData = try? await sendPTPCommand(
+                    opCode: CanonPTP.CanonOpCode.getEvent.rawValue
+                ), !eventData.isEmpty {
+                    let afResult = checkAFResult(from: eventData)
+                    parsePropertyChangedEvents(from: eventData)
+
+                    if afResult != .pending {
+                        afConfirmed = (afResult == .focused)
+                        logger.info("AF result after \(poll * 100)ms: \(afConfirmed ? "FOCUSED" : "FAILED")")
+                        break
+                    }
+                }
+            }
+
+            if !afConfirmed {
+                logger.warning("AF not confirmed after 3s — firing shutter anyway")
+            }
+
+            // Full-press to fire shutter, with retry on DeviceBusy
+            for attempt in 1...5 {
+                do {
+                    _ = try await sendPTPCommand(
+                        opCode: CanonPTP.CanonOpCode.remoteReleaseOn.rawValue,
+                        params: [CanonPTP.ReleaseParam.release.rawValue, 0x00]
+                    )
+                    logger.info("RemoteReleaseOn(release) succeeded on attempt \(attempt)")
+                    break
+                } catch {
+                    logger.warning("Release attempt \(attempt)/5: \(error.localizedDescription)")
+                    if attempt < 5 {
+                        try? await Task.sleep(nanoseconds: 400_000_000)
+                    }
+                }
+            }
+
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            _ = try? await sendPTPCommand(
+                opCode: CanonPTP.CanonOpCode.remoteReleaseOff.rawValue,
+                params: [0x03]
+            )
+            return true
+
+        } catch {
+            logger.info("AF+Release failed: \(error.localizedDescription), trying immediate…")
+        }
+
+        // Strategy 2: Immediate capture (fallback — may not wait for AF)
         do {
             _ = try await sendPTPCommand(
                 opCode: CanonPTP.CanonOpCode.remoteReleaseOn.rawValue,
                 params: [CanonPTP.ReleaseParam.immediate.rawValue, 0x00]
             )
-            logger.info("RemoteReleaseOn(immediate) — shutter fired ✓")
+            logger.info("RemoteReleaseOn(immediate) — shutter fired (AF may be skipped)")
 
             try? await Task.sleep(nanoseconds: 300_000_000)
             _ = try? await sendPTPCommand(
@@ -646,48 +709,42 @@ final class CameraManager: NSObject, ObservableObject {
             )
             return true
         } catch {
-            logger.info("Immediate capture failed (0x\(String(format: "%04X", CanonPTP.ReleaseParam.immediate.rawValue))), trying focus + release…")
-        }
-
-        // Strategy 2: Separate half-press (AF) then full-press (release)
-        do {
-            _ = try await sendPTPCommand(
-                opCode: CanonPTP.CanonOpCode.remoteReleaseOn.rawValue,
-                params: [CanonPTP.ReleaseParam.focus.rawValue, 0x00]
-            )
-            logger.info("RemoteReleaseOn(focus) — AF started ✓")
-        } catch {
-            logger.error("RemoteReleaseOn(focus) failed: \(error.localizedDescription)")
+            logger.error("Immediate capture also failed: \(error.localizedDescription)")
             return false
         }
+    }
 
-        // Wait for AF to lock (was 300ms → Busy; now 800ms)
-        try? await Task.sleep(nanoseconds: 800_000_000)
+    // MARK: - AF Result Checking
 
-        // Full press with retry on DeviceBusy (0x2019)
-        for attempt in 1...5 {
-            do {
-                _ = try await sendPTPCommand(
-                    opCode: CanonPTP.CanonOpCode.remoteReleaseOn.rawValue,
-                    params: [CanonPTP.ReleaseParam.release.rawValue, 0x00]
-                )
-                logger.info("RemoteReleaseOn(release) succeeded on attempt \(attempt) ✓")
-                break
-            } catch {
-                logger.warning("Release attempt \(attempt)/5: \(error.localizedDescription)")
-                if attempt < 5 {
-                    try? await Task.sleep(nanoseconds: 400_000_000)
-                }
+    private enum AFResult {
+        case focused, failed, pending
+    }
+
+    /// Check event data for AF result event (Canon EOS 0xC18F).
+    /// Returns .focused if AF locked, .failed if AF missed, .pending if no AF event found.
+    private func checkAFResult(from data: Data) -> AFResult {
+        var offset = 0
+        while offset + 8 <= data.count {
+            let recordLen = Int(data.readUInt32(at: offset))
+            guard recordLen >= 8 else {
+                offset += 4
+                continue
             }
+            guard offset + recordLen <= data.count else { break }
+
+            let eventCode = data.readUInt32(at: offset + 4)
+            if eventCode == 0xC18F { // EOS_AfResult
+                if recordLen >= 12 {
+                    let result = data.readUInt32(at: offset + 8)
+                    logger.info("AF event 0xC18F: result=\(result) (1=focused)")
+                    return result == 1 ? .focused : .failed
+                }
+                return .focused // Event exists but no data — assume OK
+            }
+
+            offset += recordLen
         }
-
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        _ = try? await sendPTPCommand(
-            opCode: CanonPTP.CanonOpCode.remoteReleaseOff.rawValue,
-            params: [0x03]
-        )
-
-        return true // AF half-press likely triggered capture even if full-press was busy
+        return .pending
     }
 
     // MARK: - Image Download (Multi-Strategy)
