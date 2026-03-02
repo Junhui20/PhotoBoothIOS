@@ -155,8 +155,9 @@ struct ReviewView: View {
             return
         }
 
+        let sourceImage = photo.uiImage ?? UIImage()
         Task.detached(priority: .userInitiated) {
-            let result = FilterEngine.shared.applyFilter(filter, to: photo.uiImage ?? UIImage())
+            let result = FilterEngine.shared.applyFilter(filter, to: sourceImage)
             await MainActor.run {
                 filteredImage = result
             }
