@@ -54,6 +54,21 @@ struct CameraDeviceInfo {
     }
 }
 
+// MARK: - Captured Photo
+
+/// A photo captured from the camera and downloaded to the iPad.
+struct CapturedPhoto: Identifiable {
+    let id = UUID()
+    let imageData: Data
+    let timestamp: Date
+    let width: Int
+    let height: Int
+
+    var uiImage: UIImage? {
+        UIImage(data: imageData)
+    }
+}
+
 // MARK: - Errors
 
 enum PhotoBoothError: LocalizedError {

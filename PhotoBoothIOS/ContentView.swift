@@ -10,110 +10,207 @@ import SwiftUI
 struct ContentView: View {
 
     @EnvironmentObject var cameraManager: CameraManager
+    @State private var showCapturedPhoto = false
+    @State private var captureFlash = false
+    @State private var errorMessage: String?
+    @State private var showError = false
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            VStack(spacing: 32) {
+            VStack(spacing: 0) {
+                statusBar
+                liveViewArea
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                controlBar
+                    .padding(.vertical, 20)
+            }
 
-                Spacer()
+            // Capture flash overlay
+            if captureFlash {
+                Color.white.ignoresSafeArea()
+                    .transition(.opacity)
+            }
 
-                // Status indicator
-                statusSection
+            // Captured photo overlay
+            if showCapturedPhoto, let photo = cameraManager.lastCapturedPhoto {
+                capturedPhotoOverlay(photo: photo)
+            }
+        }
+        .onAppear { cameraManager.startScanning() }
+        .onDisappear { cameraManager.stopScanning() }
+        .alert("Error", isPresented: $showError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(errorMessage ?? "Unknown error")
+        }
+        .animation(.easeInOut(duration: 0.4), value: cameraManager.connectionState)
+    }
 
-                // Device info card (when connected)
-                if cameraManager.connectionState.isReady {
-                    deviceInfoCard
-                        .transition(.opacity.combined(with: .move(edge: .bottom)))
-                } else {
-                    disconnectedPrompt
+    // MARK: - Status Bar
+
+    private var statusBar: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(cameraManager.connectionState.statusColor)
+                    .frame(width: 12, height: 12)
+                    .shadow(
+                        color: cameraManager.connectionState.statusColor.opacity(0.6),
+                        radius: 6
+                    )
+                Text(cameraManager.connectionState.displayText)
+                    .font(.subheadline)
+                    .foregroundColor(.white)
+            }
+
+            Spacer()
+
+            if cameraManager.connectionState.isReady {
+                Text(cameraManager.deviceInfo.displayName)
+                    .font(.subheadline)
+                    .foregroundColor(.white.opacity(0.7))
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .background(Color.black.opacity(0.8))
+    }
+
+    // MARK: - Live View
+
+    private var liveViewArea: some View {
+        LiveViewDisplay(
+            image: cameraManager.liveViewImage,
+            isConnected: cameraManager.connectionState.isReady
+        )
+        .aspectRatio(3.0 / 2.0, contentMode: .fit)
+    }
+
+    // MARK: - Control Bar
+
+    private var controlBar: some View {
+        HStack(spacing: 40) {
+            // Gallery thumbnail (last captured photo)
+            lastPhotoThumbnail
+
+            // Capture button
+            captureButton
+
+            // Placeholder for future controls (settings, switch camera, etc.)
+            Color.clear.frame(width: 60, height: 60)
+        }
+        .padding(.horizontal, 40)
+    }
+
+    private var lastPhotoThumbnail: some View {
+        Group {
+            if let photo = cameraManager.lastCapturedPhoto,
+               let image = photo.uiImage {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 60, height: 60)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .onTapGesture { showCapturedPhoto = true }
+            } else {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.gray.opacity(0.3))
+                    .frame(width: 60, height: 60)
+                    .overlay(
+                        Image(systemName: "photo")
+                            .foregroundColor(.gray)
+                    )
+            }
+        }
+    }
+
+    private var captureButton: some View {
+        Button(action: { triggerCapture() }) {
+            ZStack {
+                Circle()
+                    .stroke(Color.white, lineWidth: 4)
+                    .frame(width: 80, height: 80)
+                Circle()
+                    .fill(cameraManager.isCapturing ? Color.gray : Color.white)
+                    .frame(width: 68, height: 68)
+            }
+        }
+        .disabled(cameraManager.isCapturing || !cameraManager.connectionState.isReady)
+        .scaleEffect(cameraManager.isCapturing ? 0.9 : 1.0)
+        .animation(.easeInOut(duration: 0.1), value: cameraManager.isCapturing)
+    }
+
+    // MARK: - Capture Action
+
+    private func triggerCapture() {
+        Task {
+            do {
+                withAnimation(.easeIn(duration: 0.1)) { captureFlash = true }
+                _ = try await cameraManager.capturePhoto()
+                withAnimation(.easeOut(duration: 0.3)) { captureFlash = false }
+                showCapturedPhoto = true
+            } catch {
+                captureFlash = false
+                errorMessage = error.localizedDescription
+                showError = true
+            }
+        }
+    }
+
+    // MARK: - Captured Photo Overlay
+
+    private func capturedPhotoOverlay(photo: CapturedPhoto) -> some View {
+        ZStack {
+            Color.black.opacity(0.85).ignoresSafeArea()
+                .onTapGesture { showCapturedPhoto = false }
+
+            VStack(spacing: 24) {
+                Text("Photo Captured!")
+                    .font(.title).fontWeight(.bold)
+                    .foregroundColor(.white)
+
+                if let image = photo.uiImage {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxHeight: 500)
+                        .cornerRadius(12)
+                        .shadow(radius: 20)
                 }
 
-                Spacer()
+                HStack(spacing: 20) {
+                    Button(action: { showCapturedPhoto = false }) {
+                        Label("Retake", systemImage: "arrow.counterclockwise")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 32)
+                            .padding(.vertical, 14)
+                            .background(Color.gray.opacity(0.5))
+                            .cornerRadius(12)
+                    }
+
+                    Button(action: {
+                        if let image = photo.uiImage {
+                            UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
+                        }
+                        showCapturedPhoto = false
+                    }) {
+                        Label("Save", systemImage: "square.and.arrow.down")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 32)
+                            .padding(.vertical, 14)
+                            .background(Color.blue)
+                            .cornerRadius(12)
+                    }
+                }
             }
-            .padding(32)
-            .animation(.easeInOut(duration: 0.4), value: cameraManager.connectionState)
+            .padding(40)
         }
-        .onAppear {
-            cameraManager.startScanning()
-        }
-        .onDisappear {
-            cameraManager.stopScanning()
-        }
-    }
-
-    // MARK: - Status Indicator
-
-    private var statusSection: some View {
-        HStack(spacing: 12) {
-            Circle()
-                .fill(cameraManager.connectionState.statusColor)
-                .frame(width: 14, height: 14)
-                .shadow(color: cameraManager.connectionState.statusColor.opacity(0.6), radius: 6)
-
-            Text(cameraManager.connectionState.displayText)
-                .font(.headline)
-                .foregroundColor(.white)
-        }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 14)
-        .background(.ultraThinMaterial, in: Capsule())
-    }
-
-    // MARK: - Device Info Card
-
-    private var deviceInfoCard: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "camera.fill")
-                .font(.system(size: 48))
-                .foregroundColor(.green)
-
-            Text(cameraManager.deviceInfo.displayName)
-                .font(.largeTitle)
-                .fontWeight(.bold)
-                .foregroundColor(.white)
-
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 16) {
-                infoRow(label: "Manufacturer", value: cameraManager.deviceInfo.manufacturer)
-                infoRow(label: "Serial", value: cameraManager.deviceInfo.serialNumber)
-                infoRow(label: "Firmware", value: cameraManager.deviceInfo.firmwareVersion)
-                infoRow(label: "ICDevice Name", value: cameraManager.deviceInfo.name)
-            }
-        }
-        .padding(32)
-        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 20))
-    }
-
-    private func infoRow(label: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label)
-                .font(.caption)
-                .foregroundColor(.gray)
-            Text(value.isEmpty ? "—" : value)
-                .font(.body)
-                .foregroundColor(.white)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    // MARK: - Disconnected Prompt
-
-    private var disconnectedPrompt: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "camera.fill")
-                .font(.system(size: 60))
-                .foregroundColor(.gray)
-
-            Text("Connect a Canon camera via USB")
-                .font(.title3)
-                .foregroundColor(.gray)
-
-            Text("Use a USB-C cable or Lightning adapter")
-                .font(.subheadline)
-                .foregroundColor(.gray.opacity(0.7))
-        }
+        .transition(.opacity)
     }
 }
 

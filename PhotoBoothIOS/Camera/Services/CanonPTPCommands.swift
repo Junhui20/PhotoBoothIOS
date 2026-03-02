@@ -22,20 +22,36 @@ enum CanonPTP {
         case getPartialObject    = 0x101B
     }
 
-    // MARK: - Canon Vendor-Specific Operation Codes
+    // MARK: - Canon EOS Vendor-Specific Operation Codes
+    // Reference: libgphoto2/camlibs/ptp2/ptp.h (canonical Canon PTP source)
+    // CRITICAL FIX: Previous codes had 0x9128=getLiveViewImage which is actually
+    // RemoteReleaseOn. Calling "live view" would have fired the shutter.
 
     enum CanonOpCode: UInt16 {
-        case getDeviceInfoEx     = 0x9108
-        case remoteRelease       = 0x910F
-        case setDevicePropEx     = 0x9110
-        case remoteReleaseOn     = 0x9113
-        case remoteReleaseOff    = 0x9114
-        case getEvent            = 0x9126
-        case getLiveViewImage    = 0x9128
-        case moveFocusLens       = 0x9129
-        case getLiveViewProps    = 0x912B
-        case setLiveViewProps    = 0x912C
-        case setRemoteShootMode  = 0x9160
+        case getDeviceInfoEx      = 0x9108
+        case remoteRelease        = 0x910F  // Simple shutter trigger
+        case setDevicePropEx      = 0x9110
+        case getRemoteMode        = 0x9113  // Was incorrectly: remoteReleaseOn
+        case setRemoteMode        = 0x9114  // Was incorrectly: remoteReleaseOff
+        case setEventMode         = 0x9115  // Enable event notifications
+        case getEvent             = 0x9116  // Was incorrectly: 0x9126
+        case remoteReleaseOn      = 0x9128  // Half/full press shutter
+        case remoteReleaseOff     = 0x9129  // Release shutter
+        case getLiveViewProps      = 0x912B
+        case setLiveViewProps      = 0x912C
+        case initViewfinder       = 0x9151  // Start live view output
+        case terminateViewfinder  = 0x9152  // Stop live view output
+        case getViewFinderData    = 0x9153  // Get one live view JPEG frame
+        case moveFocus            = 0x9155  // Move focus lens
+        case setRemoteShootMode   = 0x9160  // Newer mirrorless remote mode
+    }
+
+    // MARK: - Remote Release Parameters (for RemoteReleaseOn 0x9128)
+
+    enum ReleaseParam: UInt32 {
+        case focus     = 0x01  // Half-press (autofocus)
+        case release   = 0x02  // Full press (shutter)
+        case immediate = 0x03  // Focus + release combined
     }
 
     // MARK: - Canon Device Properties

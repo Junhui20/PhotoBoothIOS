@@ -85,6 +85,30 @@ nonisolated extension Data {
         return 4 + arrayCount * 2
     }
 
+    // MARK: - JPEG Extraction
+
+    /// Find JPEG data within a PTP response buffer.
+    /// Searches for SOI marker (0xFF 0xD8) and EOI marker (0xFF 0xD9).
+    /// Canon GetViewFinderData (0x9153) embeds JPEG in a multi-segment response.
+    func findJPEGData() -> Data? {
+        guard count > 4 else { return nil }
+
+        let bytes = [UInt8](self)
+        for i in 0..<(bytes.count - 1) {
+            guard bytes[i] == 0xFF, bytes[i + 1] == 0xD8 else { continue }
+
+            // Found JPEG SOI — search backwards from end for EOI (0xFF 0xD9)
+            for j in stride(from: bytes.count - 1, through: i + 3, by: -1) {
+                if bytes[j] == 0xD9 && bytes[j - 1] == 0xFF {
+                    return Data(bytes[i...j])
+                }
+            }
+            // No EOI found — return from SOI to end (partial frame)
+            return Data(bytes[i...])
+        }
+        return nil
+    }
+
     // MARK: - Debug Helpers
 
     /// Hex string of the first N bytes, for PTP debug logging.

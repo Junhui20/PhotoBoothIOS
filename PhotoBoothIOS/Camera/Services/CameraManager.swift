@@ -14,6 +14,10 @@ final class CameraManager: NSObject, ObservableObject {
 
     @Published var connectionState: CameraConnectionState = .disconnected
     @Published var deviceInfo = CameraDeviceInfo()
+    @Published var liveViewImage: UIImage?
+    @Published var lastCapturedPhoto: CapturedPhoto?
+    @Published var isCapturing: Bool = false
+    @Published var isLiveViewActive: Bool = false
 
     // MARK: - Private
 
@@ -21,6 +25,7 @@ final class CameraManager: NSObject, ObservableObject {
     private var deviceBrowser: ICDeviceBrowser?
     private var cameraDevice: ICCameraDevice?
     private var transactionID: UInt32 = 0
+    private var liveViewTask: Task<Void, Never>?
 
     // MARK: - Lifecycle
 
@@ -76,6 +81,7 @@ final class CameraManager: NSObject, ObservableObject {
 
     /// Stop scanning and disconnect.
     func stopScanning() {
+        stopLiveView()
         deviceBrowser?.stop()
         deviceBrowser = nil
         cameraDevice?.requestCloseSession()
@@ -84,6 +90,8 @@ final class CameraManager: NSObject, ObservableObject {
         transactionID = 0
         connectionState = .disconnected
         deviceInfo = CameraDeviceInfo()
+        liveViewImage = nil
+        lastCapturedPhoto = nil
     }
 
     // MARK: - PTP Transaction ID
@@ -171,6 +179,328 @@ final class CameraManager: NSObject, ObservableObject {
             connectionState = .connected
         }
     }
+
+    // MARK: - Remote Mode Setup
+
+    /// Enable remote shooting mode on the camera.
+    /// Canon EOS cameras require this before accepting remote commands.
+    /// Sequence: SetRemoteMode → SetEventMode → GetEvent (drain pending).
+    func enableRemoteMode() async {
+        logger.info("Enabling remote shooting mode…")
+
+        // Step 1: SetRemoteMode (0x9114) — 0x15 for newer mirrorless, fallback 0x01
+        do {
+            _ = try await sendPTPCommand(
+                opCode: CanonPTP.CanonOpCode.setRemoteMode.rawValue,
+                params: [0x15]
+            )
+            logger.info("SetRemoteMode(0x15) succeeded")
+        } catch {
+            logger.warning("SetRemoteMode(0x15) failed, trying 0x01: \(error.localizedDescription)")
+            do {
+                _ = try await sendPTPCommand(
+                    opCode: CanonPTP.CanonOpCode.setRemoteMode.rawValue,
+                    params: [0x01]
+                )
+                logger.info("SetRemoteMode(0x01) succeeded")
+            } catch {
+                logger.error("SetRemoteMode failed entirely: \(error.localizedDescription)")
+            }
+        }
+
+        // Step 2: SetEventMode (0x9115) — enable event notifications
+        do {
+            _ = try await sendPTPCommand(
+                opCode: CanonPTP.CanonOpCode.setEventMode.rawValue,
+                params: [0x01]
+            )
+            logger.info("SetEventMode(1) succeeded")
+        } catch {
+            logger.warning("SetEventMode failed (non-fatal): \(error.localizedDescription)")
+        }
+
+        // Step 3: Drain any pending events
+        _ = try? await sendPTPCommand(
+            opCode: CanonPTP.CanonOpCode.getEvent.rawValue
+        )
+        logger.info("Remote mode setup complete")
+    }
+
+    // MARK: - Live View
+
+    /// Start live view streaming from the camera viewfinder.
+    func startLiveView() {
+        guard connectionState.isReady, cameraDevice != nil else {
+            logger.warning("Cannot start live view — camera not connected")
+            return
+        }
+        guard liveViewTask == nil else {
+            logger.info("Live view already running")
+            return
+        }
+
+        isLiveViewActive = true
+        logger.info("Starting live view…")
+
+        liveViewTask = Task { [weak self] in
+            guard let self else { return }
+            await self.liveViewLoop()
+        }
+    }
+
+    /// Stop live view streaming.
+    func stopLiveView() {
+        isLiveViewActive = false
+        liveViewTask?.cancel()
+        liveViewTask = nil
+
+        // Tell camera to stop viewfinder (fire-and-forget)
+        if cameraDevice != nil {
+            Task {
+                _ = try? await sendPTPCommand(
+                    opCode: CanonPTP.CanonOpCode.terminateViewfinder.rawValue
+                )
+                logger.info("Viewfinder terminated")
+            }
+        }
+    }
+
+    /// Internal live view polling loop.
+    private func liveViewLoop() async {
+        // Step 1: Initiate viewfinder on camera
+        do {
+            _ = try await sendPTPCommand(
+                opCode: CanonPTP.CanonOpCode.initViewfinder.rawValue
+            )
+            logger.info("InitViewfinder (0x9151) succeeded")
+        } catch {
+            logger.warning("InitViewfinder failed (trying to poll anyway): \(error.localizedDescription)")
+        }
+
+        // Brief delay for camera to prepare
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        // Step 2: Poll GetViewFinderData in a loop
+        var consecutiveErrors = 0
+        let maxErrors = 15
+
+        while !Task.isCancelled && isLiveViewActive {
+            do {
+                let data = try await sendPTPCommand(
+                    opCode: CanonPTP.CanonOpCode.getViewFinderData.rawValue,
+                    params: [0x00200000]
+                )
+
+                consecutiveErrors = 0
+
+                if let jpegData = data.findJPEGData(),
+                   let image = UIImage(data: jpegData) {
+                    liveViewImage = image
+                }
+
+                // ~30fps target
+                try await Task.sleep(nanoseconds: 33_000_000)
+
+            } catch {
+                if Task.isCancelled || !isLiveViewActive { break }
+
+                consecutiveErrors += 1
+                if consecutiveErrors >= maxErrors {
+                    logger.error("Live view stopped after \(maxErrors) consecutive errors")
+                    isLiveViewActive = false
+                    break
+                }
+
+                logger.warning("Live view frame error (\(consecutiveErrors)/\(maxErrors)): \(error.localizedDescription)")
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+
+        isLiveViewActive = false
+        liveViewTask = nil
+        logger.info("Live view loop ended")
+    }
+
+    // MARK: - Photo Capture
+
+    /// Capture a photo: trigger shutter, wait for image, download it.
+    func capturePhoto() async throws -> CapturedPhoto {
+        guard connectionState.isReady, cameraDevice != nil else {
+            throw PhotoBoothError.cameraNotConnected
+        }
+
+        isCapturing = true
+        defer { isCapturing = false }
+
+        // Pause live view during capture
+        let wasLiveViewActive = isLiveViewActive
+        if wasLiveViewActive {
+            stopLiveView()
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+
+        logger.info("Starting capture sequence…")
+
+        let photo: CapturedPhoto
+        do {
+            photo = try await captureViaRemoteRelease()
+        } catch {
+            logger.warning("RemoteRelease failed, trying InitiateCapture: \(error.localizedDescription)")
+            photo = try await captureViaInitiateCapture()
+        }
+
+        lastCapturedPhoto = photo
+        logger.info("Photo captured: \(photo.imageData.count) bytes, \(photo.width)×\(photo.height)")
+
+        // Resume live view
+        if wasLiveViewActive {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            startLiveView()
+        }
+
+        return photo
+    }
+
+    /// Canon-specific capture via RemoteReleaseOn/Off.
+    private func captureViaRemoteRelease() async throws -> CapturedPhoto {
+        // Half-press for autofocus
+        _ = try await sendPTPCommand(
+            opCode: CanonPTP.CanonOpCode.remoteReleaseOn.rawValue,
+            params: [CanonPTP.ReleaseParam.focus.rawValue, 0x00]
+        )
+        try await Task.sleep(nanoseconds: 300_000_000) // AF lock
+
+        // Full press — shutter fires
+        _ = try await sendPTPCommand(
+            opCode: CanonPTP.CanonOpCode.remoteReleaseOn.rawValue,
+            params: [CanonPTP.ReleaseParam.release.rawValue, 0x00]
+        )
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        // Release shutter
+        _ = try await sendPTPCommand(
+            opCode: CanonPTP.CanonOpCode.remoteReleaseOff.rawValue,
+            params: [0x03]
+        )
+
+        // Poll events for ObjectAdded, then download
+        return try await waitForCaptureAndDownload()
+    }
+
+    /// Standard PTP fallback capture.
+    private func captureViaInitiateCapture() async throws -> CapturedPhoto {
+        _ = try await sendPTPCommand(
+            opCode: CanonPTP.OpCode.initiateCapture.rawValue,
+            params: [0x00000000, 0x00000000]
+        )
+        try await Task.sleep(nanoseconds: 1_500_000_000) // wait for image
+        return try await downloadLatestImage()
+    }
+
+    /// Poll GetEvent for ObjectAdded (0xC101) event, then download the new object.
+    private func waitForCaptureAndDownload() async throws -> CapturedPhoto {
+        let maxPolls = 30
+
+        for poll in 0..<maxPolls {
+            try await Task.sleep(nanoseconds: 200_000_000)
+
+            if let eventData = try? await sendPTPCommand(
+                opCode: CanonPTP.CanonOpCode.getEvent.rawValue
+            ) {
+                if let handle = parseObjectAddedEvent(from: eventData) {
+                    logger.info("ObjectAdded event: handle 0x\(String(handle, radix: 16))")
+                    return try await downloadObject(handle: handle)
+                }
+            }
+
+            logger.debug("GetEvent poll \(poll + 1)/\(maxPolls) — no ObjectAdded yet")
+        }
+
+        // Fallback: no event received, try downloading the latest file
+        logger.warning("No ObjectAdded event — falling back to latest handle")
+        return try await downloadLatestImage()
+    }
+
+    /// Parse Canon event data for ObjectAdded (0xC101).
+    /// Canon event format: [UInt32 length][UInt32 eventCode][UInt32 params...]
+    private func parseObjectAddedEvent(from data: Data) -> UInt32? {
+        guard data.count >= 12 else { return nil }
+
+        var offset = 0
+        while offset + 8 <= data.count {
+            let recordLen = Int(data.readUInt32(at: offset))
+            guard recordLen >= 8, offset + recordLen <= data.count else { break }
+
+            let eventCode = data.readUInt32(at: offset + 4)
+            if eventCode == 0xC101 && recordLen >= 12 {
+                let handle = data.readUInt32(at: offset + 8)
+                if handle != 0 { return handle }
+            }
+
+            offset += recordLen
+        }
+        return nil
+    }
+
+    // MARK: - Image Download
+
+    /// Download a specific object by handle.
+    private func downloadObject(handle: UInt32) async throws -> CapturedPhoto {
+        logger.info("Downloading object 0x\(String(handle, radix: 16))…")
+
+        let imageData = try await sendPTPCommand(
+            opCode: CanonPTP.OpCode.getObject.rawValue,
+            params: [handle]
+        )
+
+        if let jpegData = imageData.findJPEGData() {
+            let image = UIImage(data: jpegData)
+            return CapturedPhoto(
+                imageData: jpegData,
+                timestamp: .now,
+                width: Int(image?.size.width ?? 0),
+                height: Int(image?.size.height ?? 0)
+            )
+        }
+
+        // Response might BE the JPEG directly
+        guard imageData.count > 1000, UIImage(data: imageData) != nil else {
+            throw PhotoBoothError.imageDownloadFailed
+        }
+        let image = UIImage(data: imageData)
+        return CapturedPhoto(
+            imageData: imageData,
+            timestamp: .now,
+            width: Int(image?.size.width ?? 0),
+            height: Int(image?.size.height ?? 0)
+        )
+    }
+
+    /// Download the most recently added image by scanning object handles.
+    private func downloadLatestImage() async throws -> CapturedPhoto {
+        let handlesData = try await sendPTPCommand(
+            opCode: CanonPTP.OpCode.getObjectHandles.rawValue,
+            params: [0xFFFFFFFF, 0x00000000, 0x00000000]
+        )
+
+        let handle = try extractLastHandle(from: handlesData)
+        return try await downloadObject(handle: handle)
+    }
+
+    /// Extract the last (most recent) object handle from a PTP GetObjectHandles response.
+    private func extractLastHandle(from data: Data) throws -> UInt32 {
+        // Try without PTP header first (offset 0), then with header (offset 12)
+        for startOffset in [0, 12] {
+            guard data.count > startOffset + 4 else { continue }
+            let count = data.readUInt32(at: startOffset)
+            guard count > 0, count < 100_000 else { continue } // sanity check
+            let lastIdx = startOffset + 4 + (Int(count) - 1) * 4
+            guard data.count >= lastIdx + 4 else { continue }
+            let handle = data.readUInt32(at: lastIdx)
+            if handle != 0 { return handle }
+        }
+        throw PhotoBoothError.noImagesFound
+    }
 }
 
 // MARK: - ICDeviceBrowserDelegate
@@ -206,11 +536,13 @@ extension CameraManager: ICDeviceBrowserDelegate {
         Task { @MainActor in
             logger.info("Device removed: \(deviceName)")
 
+            stopLiveView()
             cameraDevice?.delegate = nil
             cameraDevice = nil
             transactionID = 0
             connectionState = .disconnected
             deviceInfo = CameraDeviceInfo()
+            liveViewImage = nil
         }
     }
 }
@@ -250,11 +582,13 @@ extension CameraManager: ICCameraDeviceDelegate {
     nonisolated func didRemove(_ device: ICDevice) {
         Task { @MainActor in
             logger.info("Camera physically removed")
+            stopLiveView()
             cameraDevice?.delegate = nil
             cameraDevice = nil
             transactionID = 0
             connectionState = .disconnected
             deviceInfo = CameraDeviceInfo()
+            liveViewImage = nil
         }
     }
 
@@ -283,6 +617,10 @@ extension CameraManager: ICCameraDeviceDelegate {
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.readDeviceInfo()
+
+            // Enable remote mode, then auto-start live view
+            await self.enableRemoteMode()
+            self.startLiveView()
         }
     }
 
