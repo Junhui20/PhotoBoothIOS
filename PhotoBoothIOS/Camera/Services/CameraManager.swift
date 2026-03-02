@@ -18,6 +18,7 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var lastCapturedPhoto: CapturedPhoto?
     @Published var isCapturing: Bool = false
     @Published var isLiveViewActive: Bool = false
+    @Published var cameraSettings = CameraSettings()
 
     // MARK: - Private
 
@@ -94,6 +95,7 @@ final class CameraManager: NSObject, ObservableObject {
         transactionID = 0
         connectionState = .disconnected
         deviceInfo = CameraDeviceInfo()
+        cameraSettings = CameraSettings()
         liveViewImage = nil
         lastCapturedPhoto = nil
     }
@@ -241,10 +243,13 @@ final class CameraManager: NSObject, ObservableObject {
             logger.warning("SetEventMode failed (non-fatal): \(error.localizedDescription)")
         }
 
-        // Step 3: Drain any pending events
-        _ = try? await sendPTPCommand(
+        // Step 3: Drain pending events and parse initial camera settings
+        if let eventData = try? await sendPTPCommand(
             opCode: CanonPTP.CanonOpCode.getEvent.rawValue
-        )
+        ), !eventData.isEmpty {
+            parsePropertyChangedEvents(from: eventData)
+            logger.info("Initial camera settings parsed from \(eventData.count)-byte event data")
+        }
         logger.info("Remote mode setup complete")
     }
 
@@ -386,6 +391,15 @@ final class CameraManager: NSObject, ObservableObject {
                     logger.debug("No JPEG found in \(data.count)-byte payload: \(data.hexPrefix(64))")
                 }
 
+                // Periodically poll events for settings changes (~every 3s)
+                if framesReceived % 90 == 0 {
+                    if let eventData = try? await sendPTPCommand(
+                        opCode: CanonPTP.CanonOpCode.getEvent.rawValue
+                    ), !eventData.isEmpty {
+                        parsePropertyChangedEvents(from: eventData)
+                    }
+                }
+
                 // ~30fps target
                 try await Task.sleep(nanoseconds: 33_000_000)
 
@@ -419,6 +433,111 @@ final class CameraManager: NSObject, ObservableObject {
         isLiveViewActive = false
         liveViewTask = nil
         logger.info("Live view loop ended after \(framesReceived) frames")
+    }
+
+    // MARK: - Camera Settings
+
+    /// Parse Canon EOS property-changed events (0xC189) from GetEvent data.
+    ///
+    /// Canon GetEvent (0x9116) returns multiple event records, each starting with
+    /// `[UInt32 size][UInt32 eventCode]`. Property-changed records (0xC189) have the
+    /// format: `[size=16][code=0xC189][propCode][value]`.
+    private func parsePropertyChangedEvents(from data: Data) {
+        guard data.count >= 16 else { return }
+
+        var offset = 0
+        var propsFound = 0
+
+        while offset + 8 <= data.count {
+            let recordLen = Int(data.readUInt32(at: offset))
+            guard recordLen >= 8 else {
+                offset += 4
+                continue
+            }
+            guard offset + recordLen <= data.count else { break }
+
+            let eventCode = data.readUInt32(at: offset + 4)
+            if eventCode == 0xC189 && recordLen >= 16 {
+                let propCode = data.readUInt32(at: offset + 8)
+                let value = data.readUInt32(at: offset + 12)
+                applyPropertyValue(propCode: propCode, value: value)
+                propsFound += 1
+            }
+
+            offset += recordLen
+        }
+
+        if propsFound > 0 {
+            logger.debug("Parsed \(propsFound) property values from event data")
+        }
+    }
+
+    /// Apply a single Canon EOS property value to the current settings.
+    private func applyPropertyValue(propCode: UInt32, value: UInt32) {
+        switch propCode {
+        case CanonPTP.DeviceProp.iso.rawValue:
+            cameraSettings.iso = ISOValue(rawValue: value) ?? .unknown
+        case CanonPTP.DeviceProp.aperture.rawValue:
+            cameraSettings.aperture = ApertureValue(rawValue: value) ?? .unknown
+        case CanonPTP.DeviceProp.shutterSpeed.rawValue:
+            cameraSettings.shutterSpeed = ShutterSpeedValue(rawValue: value) ?? .unknown
+        case CanonPTP.DeviceProp.whiteBalance.rawValue:
+            cameraSettings.whiteBalance = WhiteBalanceValue(rawValue: value) ?? .unknown
+        case CanonPTP.DeviceProp.exposureComp.rawValue:
+            cameraSettings.exposureComp = ExposureCompValue(rawValue: value) ?? .zero
+        case CanonPTP.DeviceProp.batteryLevel.rawValue:
+            cameraSettings.batteryLevel = Int(value)
+        case CanonPTP.DeviceProp.availableShots.rawValue:
+            cameraSettings.availableShots = Int(value)
+        default:
+            break
+        }
+    }
+
+    /// Set a camera property via Canon SetDevicePropValueEx (0x9110).
+    /// After setting, drains events to get the confirmed value back.
+    func setCameraProperty(_ prop: CanonPTP.DeviceProp, value: UInt32) async throws {
+        let propData = CanonPTP.buildPropertyChangeData(
+            propCode: prop.rawValue,
+            value: value
+        )
+        _ = try await sendPTPCommand(
+            opCode: CanonPTP.CanonOpCode.setDevicePropEx.rawValue,
+            outData: propData
+        )
+        logger.info("Set property 0x\(String(prop.rawValue, radix: 16)) = 0x\(String(value, radix: 16))")
+
+        // Drain events to get the confirmed value back from camera
+        if let eventData = try? await sendPTPCommand(
+            opCode: CanonPTP.CanonOpCode.getEvent.rawValue
+        ), !eventData.isEmpty {
+            parsePropertyChangedEvents(from: eventData)
+        }
+    }
+
+    /// Set ISO value on the camera.
+    func setISO(_ iso: ISOValue) async throws {
+        try await setCameraProperty(.iso, value: iso.rawValue)
+    }
+
+    /// Set aperture value on the camera.
+    func setAperture(_ av: ApertureValue) async throws {
+        try await setCameraProperty(.aperture, value: av.rawValue)
+    }
+
+    /// Set shutter speed on the camera.
+    func setShutterSpeed(_ tv: ShutterSpeedValue) async throws {
+        try await setCameraProperty(.shutterSpeed, value: tv.rawValue)
+    }
+
+    /// Set white balance mode on the camera.
+    func setWhiteBalance(_ wb: WhiteBalanceValue) async throws {
+        try await setCameraProperty(.whiteBalance, value: wb.rawValue)
+    }
+
+    /// Set exposure compensation on the camera.
+    func setExposureComp(_ ev: ExposureCompValue) async throws {
+        try await setCameraProperty(.exposureComp, value: ev.rawValue)
     }
 
     // MARK: - Photo Capture
@@ -776,6 +895,7 @@ extension CameraManager: ICDeviceBrowserDelegate {
             transactionID = 0
             connectionState = .disconnected
             deviceInfo = CameraDeviceInfo()
+            cameraSettings = CameraSettings()
             liveViewImage = nil
         }
     }
@@ -822,6 +942,7 @@ extension CameraManager: ICCameraDeviceDelegate {
             transactionID = 0
             connectionState = .disconnected
             deviceInfo = CameraDeviceInfo()
+            cameraSettings = CameraSettings()
             liveViewImage = nil
         }
     }

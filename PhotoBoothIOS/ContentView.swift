@@ -14,6 +14,7 @@ struct ContentView: View {
     @State private var captureFlash = false
     @State private var errorMessage: String?
     @State private var showError = false
+    @State private var activeSetting: CameraSettingsPanel.SettingType?
 
     var body: some View {
         ZStack {
@@ -24,6 +25,13 @@ struct ContentView: View {
                 liveViewArea
                     .padding(.horizontal, 16)
                     .padding(.top, 8)
+
+                // Camera settings panel (when connected)
+                if cameraManager.connectionState.isReady {
+                    CameraSettingsPanel(activeSetting: $activeSetting)
+                        .padding(.top, 8)
+                }
+
                 controlBar
                     .padding(.vertical, 20)
             }
@@ -69,9 +77,28 @@ struct ContentView: View {
             Spacer()
 
             if cameraManager.connectionState.isReady {
-                Text(cameraManager.deviceInfo.displayName)
-                    .font(.subheadline)
-                    .foregroundColor(.white.opacity(0.7))
+                HStack(spacing: 12) {
+                    // Battery level
+                    if cameraManager.cameraSettings.batteryLevel >= 0 {
+                        HStack(spacing: 3) {
+                            Image(systemName: batteryIconName)
+                            Text("\(cameraManager.cameraSettings.batteryLevel)%")
+                                .font(.caption)
+                        }
+                        .foregroundColor(batteryColor)
+                    }
+
+                    // Available shots
+                    if cameraManager.cameraSettings.availableShots > 0 {
+                        Text("\(cameraManager.cameraSettings.availableShots)")
+                            .font(.caption)
+                            .foregroundColor(.white.opacity(0.5))
+                    }
+
+                    Text(cameraManager.deviceInfo.displayName)
+                        .font(.subheadline)
+                        .foregroundColor(.white.opacity(0.7))
+                }
             }
         }
         .padding(.horizontal, 20)
@@ -146,6 +173,7 @@ struct ContentView: View {
     // MARK: - Capture Action
 
     private func triggerCapture() {
+        activeSetting = nil // Dismiss settings picker
         Task {
             do {
                 withAnimation(.easeIn(duration: 0.1)) { captureFlash = true }
@@ -158,6 +186,26 @@ struct ContentView: View {
                 showError = true
             }
         }
+    }
+
+    // MARK: - Battery Helpers
+
+    private var batteryIconName: String {
+        let level = cameraManager.cameraSettings.batteryLevel
+        switch level {
+        case 0..<10:  return "battery.0percent"
+        case 10..<35: return "battery.25percent"
+        case 35..<65: return "battery.50percent"
+        case 65..<90: return "battery.75percent"
+        default:      return "battery.100percent"
+        }
+    }
+
+    private var batteryColor: Color {
+        let level = cameraManager.cameraSettings.batteryLevel
+        if level < 15 { return .red }
+        if level < 30 { return .orange }
+        return .green
     }
 
     // MARK: - Captured Photo Overlay
