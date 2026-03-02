@@ -276,20 +276,63 @@ final class CameraManager: NSObject, ObservableObject {
         liveViewTask?.cancel()
         liveViewTask = nil
 
-        // Tell camera to stop viewfinder (fire-and-forget)
+        // Tell camera to stop viewfinder and restore EVF to camera LCD (fire-and-forget)
         if cameraDevice != nil {
             Task {
                 _ = try? await sendPTPCommand(
                     opCode: CanonPTP.CanonOpCode.terminateViewfinder.rawValue
                 )
-                logger.info("Viewfinder terminated")
+                // Restore EVF output to camera LCD
+                let evfData = CanonPTP.buildPropertyChangeData(
+                    propCode: CanonPTP.DeviceProp.evfOutputDevice.rawValue,
+                    value: CanonPTP.EVFOutputDevice.tft.rawValue
+                )
+                _ = try? await sendPTPCommand(
+                    opCode: CanonPTP.CanonOpCode.setDevicePropEx.rawValue,
+                    outData: evfData
+                )
+                logger.info("Viewfinder terminated, EVF restored to camera LCD")
             }
         }
     }
 
     /// Internal live view polling loop.
     private func liveViewLoop() async {
-        // Step 1: Initiate viewfinder on camera
+        // Step 1: Set EVF output device to USB (required before viewfinder works)
+        // Canon EOS cameras default to TFT (camera LCD). Must set to 0x02 (PC/USB)
+        // or 0x03 (both) before GetViewFinderData returns frames.
+        do {
+            let evfData = CanonPTP.buildPropertyChangeData(
+                propCode: CanonPTP.DeviceProp.evfOutputDevice.rawValue,
+                value: CanonPTP.EVFOutputDevice.pc.rawValue
+            )
+            _ = try await sendPTPCommand(
+                opCode: CanonPTP.CanonOpCode.setDevicePropEx.rawValue,
+                outData: evfData
+            )
+            logger.info("EVFOutputDevice set to PC (USB) ✓")
+        } catch {
+            logger.warning("Failed to set EVFOutputDevice: \(error.localizedDescription)")
+            // Try setting to "both" (TFT + PC) as fallback
+            do {
+                let evfData = CanonPTP.buildPropertyChangeData(
+                    propCode: CanonPTP.DeviceProp.evfOutputDevice.rawValue,
+                    value: CanonPTP.EVFOutputDevice.both.rawValue
+                )
+                _ = try await sendPTPCommand(
+                    opCode: CanonPTP.CanonOpCode.setDevicePropEx.rawValue,
+                    outData: evfData
+                )
+                logger.info("EVFOutputDevice set to Both (TFT+PC) ✓")
+            } catch {
+                logger.error("Failed to set EVFOutputDevice (both): \(error.localizedDescription)")
+            }
+        }
+
+        // Brief delay for EVF property to take effect
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        // Step 2: Initiate viewfinder on camera
         do {
             _ = try await sendPTPCommand(
                 opCode: CanonPTP.CanonOpCode.initViewfinder.rawValue
@@ -572,9 +615,12 @@ final class CameraManager: NSObject, ObservableObject {
         return try await downloadLatestImage()
     }
 
-    /// Parse Canon EOS event data for ObjectAdded / ObjectAddedEx.
+    /// Parse Canon EOS event data for object-related events.
     /// Canon event format: [UInt32 recordSize][UInt32 eventCode][UInt32 params...]
-    /// Event codes: 0xC101 = RequestObjectTransfer, 0xC181 = ObjectAddedEx (newer cameras).
+    /// Event codes checked:
+    ///   0xC101 = RequestObjectTransfer (older cameras)
+    ///   0xC181 = ObjectAddedEx (newer cameras, DSLR)
+    ///   0xC1A7 = ObjectContentChanged (EOS R-series mirrorless, contains handle)
     private func parseObjectAddedEvent(from data: Data) -> UInt32? {
         guard data.count >= 8 else { return nil }
 
@@ -593,12 +639,12 @@ final class CameraManager: NSObject, ObservableObject {
             let eventCode = data.readUInt32(at: offset + 4)
             logger.debug("  Event record: size=\(recordLen) code=0x\(String(eventCode, radix: 16))")
 
-            // Check both ObjectAdded variants
-            let isObjectAdded = (eventCode == 0xC101 || eventCode == 0xC181)
-            if isObjectAdded && recordLen >= 12 {
+            // Check all known object-added event variants
+            let isObjectEvent = (eventCode == 0xC101 || eventCode == 0xC181 || eventCode == 0xC1A7)
+            if isObjectEvent && recordLen >= 12 {
                 let handle = data.readUInt32(at: offset + 8)
                 if handle != 0 {
-                    logger.info("  → ObjectAdded handle=0x\(String(handle, radix: 16))")
+                    logger.info("  → Object event 0x\(String(eventCode, radix: 16)) handle=0x\(String(handle, radix: 16))")
                     return handle
                 }
             }

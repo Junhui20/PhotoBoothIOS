@@ -72,6 +72,29 @@ enum CanonPTP {
         case lensName            = 0xD115
         case batteryLevel        = 0xD11C
         case availableShots      = 0xD120
+        /// EVF output device: 0x01=TFT (camera LCD), 0x02=PC (USB), 0x03=TFT+PC
+        /// Must be set to 0x02 or 0x03 before GetViewFinderData will return live view frames.
+        case evfOutputDevice     = 0xD1B0
+    }
+
+    // MARK: - EVF Output Device Values
+
+    enum EVFOutputDevice: UInt32 {
+        case tft   = 0x01  // Camera LCD/EVF only (default)
+        case pc    = 0x02  // USB output to PC/iPad
+        case both  = 0x03  // Camera LCD + USB output
+    }
+
+    // MARK: - SetDevicePropValueEx Data Builder
+
+    /// Build the data payload for Canon EOS SetDevicePropValueEx (0x9110).
+    /// Format: [UInt32 recordSize][UInt32 propCode][UInt32 value]
+    static func buildPropertyChangeData(propCode: UInt32, value: UInt32) -> Data {
+        var data = Data(capacity: 12)
+        data.appendUInt32(12)        // Record size: 4+4+4 = 12
+        data.appendUInt32(propCode)
+        data.appendUInt32(value)
+        return data
     }
 
     // MARK: - PTP Response Codes
@@ -153,11 +176,11 @@ enum CanonPTP {
     /// UInt16  VendorExtensionVersion
     /// String  VendorExtensionDesc
     /// UInt16  FunctionalMode
-    /// UInt32Array  OperationsSupported
-    /// UInt32Array  EventsSupported
-    /// UInt32Array  DevicePropertiesSupported
-    /// UInt32Array  CaptureFormats
-    /// UInt32Array  ImageFormats
+    /// UInt16Array  OperationsSupported
+    /// UInt16Array  EventsSupported
+    /// UInt16Array  DevicePropertiesSupported
+    /// UInt16Array  CaptureFormats
+    /// UInt16Array  ImageFormats
     /// String  Manufacturer
     /// String  Model
     /// String  DeviceVersion
@@ -187,28 +210,28 @@ enum CanonPTP {
         // FunctionalMode (UInt16)
         offset += 2
 
-        // OperationsSupported (UInt32 array)
-        let opsBytes = data.ptpArrayByteCount(at: offset)
+        // OperationsSupported (UInt16 array — opcodes are 16-bit)
+        let opsBytes = data.ptpUInt16ArrayByteCount(at: offset)
         guard opsBytes > 0 else { return info }
         offset += opsBytes
 
-        // EventsSupported (UInt32 array)
-        let eventsBytes = data.ptpArrayByteCount(at: offset)
+        // EventsSupported (UInt16 array)
+        let eventsBytes = data.ptpUInt16ArrayByteCount(at: offset)
         guard eventsBytes > 0 else { return info }
         offset += eventsBytes
 
-        // DevicePropertiesSupported (UInt32 array)
-        let propsBytes = data.ptpArrayByteCount(at: offset)
+        // DevicePropertiesSupported (UInt16 array)
+        let propsBytes = data.ptpUInt16ArrayByteCount(at: offset)
         guard propsBytes > 0 else { return info }
         offset += propsBytes
 
-        // CaptureFormats (UInt32 array)
-        let capFmtBytes = data.ptpArrayByteCount(at: offset)
+        // CaptureFormats (UInt16 array)
+        let capFmtBytes = data.ptpUInt16ArrayByteCount(at: offset)
         guard capFmtBytes > 0 else { return info }
         offset += capFmtBytes
 
-        // ImageFormats (UInt32 array)
-        let imgFmtBytes = data.ptpArrayByteCount(at: offset)
+        // ImageFormats (UInt16 array)
+        let imgFmtBytes = data.ptpUInt16ArrayByteCount(at: offset)
         guard imgFmtBytes > 0 else { return info }
         offset += imgFmtBytes
 
