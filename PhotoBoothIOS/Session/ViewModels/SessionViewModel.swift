@@ -12,6 +12,7 @@ final class SessionViewModel: ObservableObject {
     @Published var capturedPhotos: [CapturedPhoto] = []
     @Published var currentPhotoIndex: Int = 0
     @Published var retakeCount: Int = 0
+    @Published var selectedFilter: PhotoFilter = .natural
     @Published var config = SessionConfig()
 
     let cameraManager: CameraManager
@@ -76,18 +77,20 @@ final class SessionViewModel: ObservableObject {
         beginCountdown()
     }
 
-    /// Accept captured photos: review → sharing.
-    func acceptPhotos() {
+    /// Accept captured photos with selected filter: review → sharing.
+    func acceptPhotos(filter: PhotoFilter = .natural) {
         guard phase == .review else { return }
 
         stopAutoReturnTimer()
+        selectedFilter = filter
         HapticManager.success()
 
-        // Auto-save to photos library if enabled
+        // Auto-save to photos library if enabled (apply filter before saving)
         if config.autoSaveToPhotos {
+            let pipeline = ProcessingPipeline()
             for photo in capturedPhotos {
-                if let image = photo.uiImage {
-                    UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
+                if let processed = pipeline.applyFilterOnly(to: photo, filter: filter) {
+                    UIImageWriteToSavedPhotosAlbum(processed, nil, nil, nil)
                 }
             }
         }

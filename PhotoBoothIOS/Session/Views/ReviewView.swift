@@ -2,31 +2,38 @@ import SwiftUI
 
 /// Shows captured photo(s) for approval with accept/retake buttons.
 ///
-/// Includes an auto-advance timer bar that fills over the review duration.
-/// For multi-photo sessions, shows all photos in their layout arrangement.
+/// Includes a filter picker, auto-advance timer bar, and layout support.
 struct ReviewView: View {
 
     let photos: [CapturedPhoto]
     let onRetake: () -> Void
-    let onAccept: () -> Void
+    let onAccept: (PhotoFilter) -> Void
     let config: SessionConfig
 
     @State private var timerProgress: CGFloat = 0.0
+    @State private var selectedFilter: PhotoFilter = .natural
+    @State private var filteredImage: UIImage?
 
     var body: some View {
         ZStack {
             Color.black.opacity(0.85)
                 .ignoresSafeArea()
 
-            VStack(spacing: 24) {
+            VStack(spacing: 16) {
                 // Header
                 Text(photos.count > 1 ? "Your Photos!" : "Your Photo!")
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
                     .foregroundColor(.white)
 
-                // Photo display
+                // Photo display (with filter applied)
                 photoDisplay
-                    .frame(maxHeight: UIScreen.main.bounds.height * 0.55)
+                    .frame(maxHeight: UIScreen.main.bounds.height * 0.45)
+
+                // Filter picker
+                FilterPickerView(
+                    sourceImage: photos.last?.uiImage,
+                    selectedFilter: $selectedFilter
+                )
 
                 // Action buttons
                 HStack(spacing: 24) {
@@ -47,7 +54,7 @@ struct ReviewView: View {
 
                     Button(action: {
                         HapticManager.success()
-                        onAccept()
+                        onAccept(selectedFilter)
                     }) {
                         Label("Love it!", systemImage: "heart.fill")
                             .font(.title3.weight(.bold))
@@ -73,7 +80,7 @@ struct ReviewView: View {
                 .frame(height: 4)
                 .padding(.horizontal, 40)
             }
-            .padding(32)
+            .padding(24)
         }
         .onAppear {
             timerProgress = 0
@@ -81,7 +88,12 @@ struct ReviewView: View {
                 timerProgress = 1.0
             }
         }
+        .onChange(of: selectedFilter) { newFilter in
+            applyFilterPreview(newFilter)
+        }
     }
+
+    // MARK: - Photo Display
 
     @ViewBuilder
     private var photoDisplay: some View {
@@ -111,7 +123,13 @@ struct ReviewView: View {
 
     @ViewBuilder
     private var singlePhotoView: some View {
-        if let photo = photos.last {
+        if let displayImage = filteredImage ?? photos.last?.uiImage {
+            Image(uiImage: displayImage)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .cornerRadius(12)
+                .shadow(color: .white.opacity(0.1), radius: 20)
+        } else if let photo = photos.last {
             photoImage(photo)
         }
     }
@@ -124,6 +142,24 @@ struct ReviewView: View {
                 .aspectRatio(contentMode: .fit)
                 .cornerRadius(12)
                 .shadow(color: .white.opacity(0.1), radius: 20)
+        }
+    }
+
+    // MARK: - Filter Preview
+
+    private func applyFilterPreview(_ filter: PhotoFilter) {
+        guard let photo = photos.last else { return }
+
+        if filter.id == "natural" {
+            filteredImage = nil
+            return
+        }
+
+        Task.detached(priority: .userInitiated) {
+            let result = FilterEngine.shared.applyFilter(filter, to: photo.uiImage ?? UIImage())
+            await MainActor.run {
+                filteredImage = result
+            }
         }
     }
 }

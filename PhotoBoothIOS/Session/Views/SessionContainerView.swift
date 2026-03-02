@@ -55,7 +55,7 @@ struct SessionContainerView: View {
                     ReviewView(
                         photos: sessionVM.capturedPhotos,
                         onRetake: { sessionVM.retakePhoto() },
-                        onAccept: { sessionVM.acceptPhotos() },
+                        onAccept: { filter in sessionVM.acceptPhotos(filter: filter) },
                         config: sessionVM.config
                     )
                     .transition(.move(edge: .trailing))
