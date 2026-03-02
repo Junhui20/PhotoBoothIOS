@@ -860,16 +860,11 @@ final class CameraManager: NSObject, ObservableObject {
 
         // Extract JPEG if wrapped in container, or use directly
         let imageData = data.findJPEGData() ?? data
-        guard let image = UIImage(data: imageData) else {
+        let photo = CapturedPhoto(imageData: imageData)
+        guard photo.uiImage != nil else {
             throw PhotoBoothError.imageDownloadFailed
         }
-
-        return CapturedPhoto(
-            imageData: imageData,
-            timestamp: .now,
-            width: Int(image.size.width),
-            height: Int(image.size.height)
-        )
+        return photo
     }
 
     /// Standard PTP fallback capture (only used when Canon remote commands all fail).
@@ -955,27 +950,12 @@ final class CameraManager: NSObject, ObservableObject {
             params: [handle]
         )
 
-        if let jpegData = imageData.findJPEGData() {
-            let image = UIImage(data: jpegData)
-            return CapturedPhoto(
-                imageData: jpegData,
-                timestamp: .now,
-                width: Int(image?.size.width ?? 0),
-                height: Int(image?.size.height ?? 0)
-            )
-        }
-
-        // Response might BE the JPEG directly
-        guard imageData.count > 1000, UIImage(data: imageData) != nil else {
+        let jpegData = imageData.findJPEGData() ?? imageData
+        let photo = CapturedPhoto(imageData: jpegData)
+        guard photo.uiImage != nil else {
             throw PhotoBoothError.imageDownloadFailed
         }
-        let image = UIImage(data: imageData)
-        return CapturedPhoto(
-            imageData: imageData,
-            timestamp: .now,
-            width: Int(image?.size.width ?? 0),
-            height: Int(image?.size.height ?? 0)
-        )
+        return photo
     }
 
     /// Download the most recently added image by scanning object handles.

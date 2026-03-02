@@ -23,6 +23,11 @@ final class SessionViewModel: ObservableObject {
         self.cameraManager = cameraManager
     }
 
+    nonisolated deinit {
+        countdownTimer?.invalidate()
+        autoReturnTimer?.invalidate()
+    }
+
     // MARK: - Session Control
 
     /// Whether the camera is connected and ready for a session.
@@ -88,11 +93,8 @@ final class SessionViewModel: ObservableObject {
         // Auto-save to photos library if enabled (apply filter before saving)
         if config.autoSaveToPhotos {
             let pipeline = ProcessingPipeline()
-            for photo in capturedPhotos {
-                if let processed = pipeline.applyFilterOnly(to: photo, filter: filter) {
-                    UIImageWriteToSavedPhotosAlbum(processed, nil, nil, nil)
-                }
-            }
+            let images = capturedPhotos.compactMap { pipeline.applyFilterOnly(to: $0, filter: filter) }
+            PhotoLibraryHelper.saveMultipleToPhotos(images)
         }
 
         withAnimation(.easeInOut(duration: 0.4)) {

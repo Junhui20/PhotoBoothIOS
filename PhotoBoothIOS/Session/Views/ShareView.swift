@@ -78,13 +78,13 @@ struct ShareView: View {
     }
 
     private func saveToPhotos() {
-        for photo in photos {
-            if let image = photo.uiImage {
-                UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
+        let images = photos.compactMap(\.uiImage)
+        PhotoLibraryHelper.saveMultipleToPhotos(images) { success in
+            if success {
+                HapticManager.success()
+                saved = true
             }
         }
-        HapticManager.success()
-        saved = true
     }
 
     private func shareOptionButton(icon: String, label: String) -> some View {

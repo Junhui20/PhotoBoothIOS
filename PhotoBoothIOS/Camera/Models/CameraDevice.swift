@@ -57,15 +57,24 @@ struct CameraDeviceInfo {
 // MARK: - Captured Photo
 
 /// A photo captured from the camera and downloaded to the iPad.
+///
+/// `uiImage` is decoded once at init and cached as a stored property
+/// to avoid re-decoding the JPEG on every SwiftUI re-render.
 struct CapturedPhoto: Identifiable {
     let id = UUID()
     let imageData: Data
     let timestamp: Date
     let width: Int
     let height: Int
+    let uiImage: UIImage?
 
-    var uiImage: UIImage? {
-        UIImage(data: imageData)
+    init(imageData: Data, timestamp: Date = .now, width: Int = 0, height: Int = 0) {
+        self.imageData = imageData
+        self.timestamp = timestamp
+        let decoded = UIImage(data: imageData)
+        self.width = width > 0 ? width : Int(decoded?.size.width ?? 0)
+        self.height = height > 0 ? height : Int(decoded?.size.height ?? 0)
+        self.uiImage = decoded
     }
 }
 
