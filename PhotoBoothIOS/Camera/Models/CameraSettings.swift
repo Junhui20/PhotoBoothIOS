@@ -12,6 +12,7 @@ struct CameraSettings {
     var shutterSpeed: ShutterSpeedValue = .unknown
     var whiteBalance: WhiteBalanceValue = .auto
     var exposureComp: ExposureCompValue = .zero
+    var shootingMode: ShootingMode = .unknown
     var batteryLevel: Int = -1       // Canon EOS: 0=critical, 1=low, 2=half, 3=full. -1=unknown
     var availableShots: Int = -1
 
@@ -273,6 +274,32 @@ enum ExposureCompValue: UInt32, CaseIterable, Identifiable {
         case .plus2_3:  return "+2.3"
         case .plus2_7:  return "+2.7"
         case .plus3:    return "+3"
+        }
+    }
+}
+
+// MARK: - Shooting Mode (Canon EOS autoExposureMode 0xD105)
+
+enum ShootingMode: UInt32, CaseIterable, Identifiable {
+    case autoPlus    = 0x00  // A+
+    case programAE   = 0x03  // P
+    case shutterPri  = 0x04  // Tv
+    case aperturePri = 0x05  // Av
+    case manual      = 0x06  // M
+    case fv          = 0x37  // Fv
+    case unknown     = 0xFF
+
+    var id: UInt32 { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .autoPlus:    return "A+"
+        case .programAE:   return "P"
+        case .shutterPri:  return "Tv"
+        case .aperturePri: return "Av"
+        case .manual:      return "M"
+        case .fv:          return "Fv"
+        case .unknown:     return "—"
         }
     }
 }

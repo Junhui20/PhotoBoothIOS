@@ -1,12 +1,16 @@
 import SwiftUI
 
 /// Bottom panel showing current camera settings as tappable chips.
-/// Tapping a chip expands a horizontal value picker for that setting.
-/// Only shows values the camera/lens/mode currently supports (from 0xC18A events).
+///
+/// Two modes:
+///   - **Auto**: Read-only display of current camera values. No picker.
+///   - **Manual**: Tapping a chip expands a horizontal value picker.
+///     Only shows values the camera/lens/mode currently supports (from 0xC18A events).
 struct CameraSettingsPanel: View {
 
     @EnvironmentObject var cameraManager: CameraManager
     @Binding var activeSetting: SettingType?
+    @Binding var isManualMode: Bool
     @State private var errorMessage: String?
 
     enum SettingType: Equatable {
@@ -15,9 +19,10 @@ struct CameraSettingsPanel: View {
 
     var body: some View {
         VStack(spacing: 4) {
+            modeToggle
             chipsBar
 
-            if let setting = activeSetting {
+            if isManualMode, let setting = activeSetting {
                 pickerRow(for: setting)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -33,7 +38,60 @@ struct CameraSettingsPanel: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: activeSetting)
+        .animation(.easeInOut(duration: 0.2), value: isManualMode)
         .animation(.easeInOut(duration: 0.3), value: errorMessage)
+        .onChange(of: isManualMode) { newValue in
+            if !newValue {
+                activeSetting = nil
+                errorMessage = nil
+            }
+        }
+    }
+
+    // MARK: - Auto / Manual Toggle
+
+    private var modeToggle: some View {
+        HStack(spacing: 12) {
+            // Camera dial mode badge (A+, P, Tv, Av, M, Fv)
+            if cameraManager.cameraSettings.shootingMode != .unknown {
+                Text(cameraManager.cameraSettings.shootingMode.displayName)
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Color.white.opacity(0.2))
+                    .cornerRadius(8)
+            }
+
+            Spacer()
+
+            // Auto / Manual segmented toggle
+            HStack(spacing: 0) {
+                modeButton("Auto", isActive: !isManualMode) {
+                    isManualMode = false
+                }
+                modeButton("Manual", isActive: isManualMode) {
+                    isManualMode = true
+                }
+            }
+            .background(Color.white.opacity(0.1))
+            .cornerRadius(8)
+        }
+        .padding(.horizontal, 12)
+    }
+
+    private func modeButton(_ label: String, isActive: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.caption)
+                .fontWeight(isActive ? .bold : .regular)
+                .foregroundColor(isActive ? .black : .white.opacity(0.7))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .background(isActive ? Color.yellow : Color.clear)
+                .cornerRadius(8)
+        }
     }
 
     // MARK: - Chips Bar
@@ -51,6 +109,7 @@ struct CameraSettingsPanel: View {
 
     private func chip(_ prefix: String?, _ value: String, _ setting: SettingType) -> some View {
         Button {
+            guard isManualMode else { return }
             withAnimation {
                 activeSetting = activeSetting == setting ? nil : setting
                 errorMessage = nil
@@ -69,13 +128,17 @@ struct CameraSettingsPanel: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(
-                activeSetting == setting
-                    ? Color.blue.opacity(0.6)
-                    : Color.white.opacity(0.15)
-            )
+            .background(chipBackground(for: setting))
             .cornerRadius(16)
         }
+        .disabled(!isManualMode)
+    }
+
+    private func chipBackground(for setting: SettingType) -> Color {
+        if isManualMode && activeSetting == setting {
+            return Color.blue.opacity(0.6)
+        }
+        return Color.white.opacity(isManualMode ? 0.15 : 0.08)
     }
 
     // MARK: - Value Picker

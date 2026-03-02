@@ -15,6 +15,7 @@ struct ContentView: View {
     @State private var errorMessage: String?
     @State private var showError = false
     @State private var activeSetting: CameraSettingsPanel.SettingType?
+    @State private var isManualMode: Bool = false
 
     var body: some View {
         ZStack {
@@ -28,8 +29,11 @@ struct ContentView: View {
 
                 // Camera settings panel (when connected)
                 if cameraManager.connectionState.isReady {
-                    CameraSettingsPanel(activeSetting: $activeSetting)
-                        .padding(.top, 8)
+                    CameraSettingsPanel(
+                        activeSetting: $activeSetting,
+                        isManualMode: $isManualMode
+                    )
+                    .padding(.top, 8)
                 }
 
                 controlBar
@@ -42,9 +46,9 @@ struct ContentView: View {
                     .transition(.opacity)
             }
 
-            // Captured photo overlay
-            if showCapturedPhoto, let photo = cameraManager.lastCapturedPhoto {
-                capturedPhotoOverlay(photo: photo)
+            // Captured photo overlay (instant preview → full-res)
+            if showCapturedPhoto {
+                capturedPhotoOverlay
             }
         }
         .onAppear { cameraManager.startScanning() }
@@ -177,11 +181,16 @@ struct ContentView: View {
         Task {
             do {
                 withAnimation(.easeIn(duration: 0.1)) { captureFlash = true }
+
+                // Show preview overlay immediately (uses last live view frame)
+                showCapturedPhoto = true
+
                 _ = try await cameraManager.capturePhoto()
                 withAnimation(.easeOut(duration: 0.3)) { captureFlash = false }
-                showCapturedPhoto = true
+                // Overlay auto-updates: preview → full-res when lastCapturedPhoto arrives
             } catch {
                 captureFlash = false
+                showCapturedPhoto = false
                 errorMessage = error.localizedDescription
                 showError = true
             }
@@ -225,49 +234,76 @@ struct ContentView: View {
 
     // MARK: - Captured Photo Overlay
 
-    private func capturedPhotoOverlay(photo: CapturedPhoto) -> some View {
-        ZStack {
+    /// Shows instant preview immediately, auto-upgrades to full-res when download completes.
+    private var capturedPhotoOverlay: some View {
+        let fullResImage = cameraManager.lastCapturedPhoto?.uiImage
+        let previewImage = cameraManager.capturePreviewImage
+        let displayImage = fullResImage ?? previewImage
+        let isDownloading = (fullResImage == nil && cameraManager.isCapturing)
+
+        return ZStack {
             Color.black.opacity(0.85).ignoresSafeArea()
-                .onTapGesture { showCapturedPhoto = false }
+                .onTapGesture {
+                    if !cameraManager.isCapturing { showCapturedPhoto = false }
+                }
 
             VStack(spacing: 24) {
-                Text("Photo Captured!")
-                    .font(.title).fontWeight(.bold)
-                    .foregroundColor(.white)
+                if isDownloading {
+                    Text("Downloading…")
+                        .font(.title).fontWeight(.bold)
+                        .foregroundColor(.white.opacity(0.7))
+                } else {
+                    Text("Photo Captured!")
+                        .font(.title).fontWeight(.bold)
+                        .foregroundColor(.white)
+                }
 
-                if let image = photo.uiImage {
+                if let image = displayImage {
                     Image(uiImage: image)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
                         .frame(maxHeight: 500)
                         .cornerRadius(12)
                         .shadow(radius: 20)
+                        .overlay(
+                            // Loading indicator on preview image
+                            Group {
+                                if isDownloading {
+                                    ProgressView()
+                                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                        .scaleEffect(1.5)
+                                }
+                            }
+                        )
                 }
 
-                HStack(spacing: 20) {
-                    Button(action: { showCapturedPhoto = false }) {
-                        Label("Retake", systemImage: "arrow.counterclockwise")
-                            .font(.headline)
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 32)
-                            .padding(.vertical, 14)
-                            .background(Color.gray.opacity(0.5))
-                            .cornerRadius(12)
-                    }
-
-                    Button(action: {
-                        if let image = photo.uiImage {
-                            UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
+                if !cameraManager.isCapturing {
+                    HStack(spacing: 20) {
+                        Button(action: { showCapturedPhoto = false }) {
+                            Label("Retake", systemImage: "arrow.counterclockwise")
+                                .font(.headline)
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 32)
+                                .padding(.vertical, 14)
+                                .background(Color.gray.opacity(0.5))
+                                .cornerRadius(12)
                         }
-                        showCapturedPhoto = false
-                    }) {
-                        Label("Save", systemImage: "square.and.arrow.down")
-                            .font(.headline)
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 32)
-                            .padding(.vertical, 14)
-                            .background(Color.blue)
-                            .cornerRadius(12)
+
+                        Button(action: {
+                            if let photo = cameraManager.lastCapturedPhoto,
+                               let image = photo.uiImage {
+                                UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
+                            }
+                            showCapturedPhoto = false
+                        }) {
+                            Label("Save", systemImage: "square.and.arrow.down")
+                                .font(.headline)
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 32)
+                                .padding(.vertical, 14)
+                                .background(Color.blue)
+                                .cornerRadius(12)
+                        }
                     }
                 }
             }

@@ -19,6 +19,9 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var isCapturing: Bool = false
     @Published var isLiveViewActive: Bool = false
     @Published var cameraSettings = CameraSettings()
+    /// Instant preview: last live view frame captured right before shutter fires.
+    /// Shown immediately while full-res image downloads in background.
+    @Published var capturePreviewImage: UIImage?
 
     // MARK: - Private
 
@@ -98,6 +101,7 @@ final class CameraManager: NSObject, ObservableObject {
         cameraSettings = CameraSettings()
         liveViewImage = nil
         lastCapturedPhoto = nil
+        capturePreviewImage = nil
     }
 
     // MARK: - PTP Transaction ID
@@ -504,6 +508,8 @@ final class CameraManager: NSObject, ObservableObject {
             cameraSettings.batteryLevel = Int(value)
         case CanonPTP.DeviceProp.availableShots.rawValue:
             cameraSettings.availableShots = Int(value)
+        case CanonPTP.DeviceProp.autoExposureMode.rawValue:
+            cameraSettings.shootingMode = ShootingMode(rawValue: value) ?? .unknown
         default:
             break
         }
@@ -582,6 +588,13 @@ final class CameraManager: NSObject, ObservableObject {
     // MARK: - Photo Capture
 
     /// Capture a photo: trigger shutter, wait for image, download it.
+    ///
+    /// Optimized flow:
+    ///   1. Save current live view frame as instant preview
+    ///   2. Stop live view (no extra wait)
+    ///   3. Fire shutter (AF → release)
+    ///   4. Resume live view immediately (parallel with download)
+    ///   5. Download full-res image (PTP events first, then IC framework)
     func capturePhoto() async throws -> CapturedPhoto {
         guard connectionState.isReady, cameraDevice != nil else {
             throw PhotoBoothError.cameraNotConnected
@@ -590,11 +603,14 @@ final class CameraManager: NSObject, ObservableObject {
         isCapturing = true
         defer { isCapturing = false }
 
-        // Pause live view during capture
+        // Step 0: Save instant preview from live view
+        capturePreviewImage = liveViewImage
+
+        // Pause live view during shutter
         let wasLiveViewActive = isLiveViewActive
         if wasLiveViewActive {
             stopLiveView()
-            try? await Task.sleep(nanoseconds: 200_000_000)
+            // No sleep needed — camera handles the transition
         }
 
         // Clear pending files so we detect only NEW files from this capture
@@ -605,24 +621,23 @@ final class CameraManager: NSObject, ObservableObject {
         // Step 1: Fire the shutter
         let shutterFired = await triggerShutter()
 
+        // Step 2: Resume live view immediately (parallel with download)
+        if wasLiveViewActive {
+            startLiveView()
+        }
+
+        // Step 3: Download the captured image
         let photo: CapturedPhoto
         if shutterFired {
-            // Step 2: Download the captured image (multiple strategies)
             photo = try await downloadCapturedImage()
         } else {
-            // Shutter commands all failed — try standard PTP InitiateCapture as last resort
             logger.warning("All shutter commands failed, trying InitiateCapture…")
             photo = try await captureViaInitiateCapture()
         }
 
         lastCapturedPhoto = photo
+        capturePreviewImage = nil // Clear preview now that full-res is ready
         logger.info("Photo captured: \(photo.imageData.count) bytes, \(photo.width)×\(photo.height)")
-
-        // Resume live view
-        if wasLiveViewActive {
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            startLiveView()
-        }
 
         return photo
     }
@@ -683,7 +698,7 @@ final class CameraManager: NSObject, ObservableObject {
                 }
             }
 
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            try? await Task.sleep(nanoseconds: 100_000_000) // Brief wait for shutter
             _ = try? await sendPTPCommand(
                 opCode: CanonPTP.CanonOpCode.remoteReleaseOff.rawValue,
                 params: [0x03]
@@ -702,7 +717,7 @@ final class CameraManager: NSObject, ObservableObject {
             )
             logger.info("RemoteReleaseOn(immediate) — shutter fired (AF may be skipped)")
 
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            try? await Task.sleep(nanoseconds: 100_000_000)
             _ = try? await sendPTPCommand(
                 opCode: CanonPTP.CanonOpCode.remoteReleaseOff.rawValue,
                 params: [0x03]
@@ -750,39 +765,53 @@ final class CameraManager: NSObject, ObservableObject {
     // MARK: - Image Download (Multi-Strategy)
 
     /// Download the just-captured image using multiple fallback strategies.
+    ///
+    /// Order optimized for speed:
+    ///   1. PTP GetEvent (fastest — handle arrives in ~1-2s, direct GetObject download)
+    ///   2. IC framework didAdd (slower — waits for camera to write to SD + Apple transfer)
+    ///   3. GetObjectHandles brute force (last resort)
     private func downloadCapturedImage() async throws -> CapturedPhoto {
-        // Strategy 1: Wait for ICCameraDevice didAdd delegate (ImageCaptureCore file system)
-        // This is the most reliable — Apple handles PTP transfer internally
-        logger.info("Waiting for captured file via ImageCaptureCore…")
-        for poll in 1...50 { // up to 10 seconds (50 × 200ms)
+        // Strategy 1: Poll GetEvent for ObjectAdded (fastest path)
+        // Canon EOS R-series sends 0xC1A7 with the object handle ~1-2s after capture.
+        // We can then download directly via PTP GetObject.
+        logger.info("Polling PTP GetEvent for object handle…")
+        for poll in 1...20 { // up to 4 seconds (20 × 200ms)
+            // Also check IC framework files on each loop (parallel check)
             if let file = pendingCaptureFiles.last {
                 logger.info("File detected via IC delegate: \(file.name ?? "?") (\(file.fileSize) bytes)")
                 return try await downloadViaICFramework(file: file)
             }
-            if poll % 10 == 0 {
-                logger.debug("IC file poll \(poll)/50 — waiting for didAdd…")
-            }
-            try await Task.sleep(nanoseconds: 200_000_000)
-        }
-        logger.warning("No file via IC delegate after 10s")
 
-        // Strategy 2: Poll GetEvent for ObjectAdded (PTP-level events)
-        logger.info("Trying PTP GetEvent polling…")
-        for poll in 1...15 {
             if let eventData = try? await sendPTPCommand(
                 opCode: CanonPTP.CanonOpCode.getEvent.rawValue
             ), !eventData.isEmpty {
+                parsePropertyChangedEvents(from: eventData)
                 if let handle = parseObjectAddedEvent(from: eventData) {
                     logger.info("ObjectAdded event: handle 0x\(String(handle, radix: 16))")
                     return try await downloadObject(handle: handle)
                 }
             }
-            logger.debug("GetEvent poll \(poll)/15 — no ObjectAdded")
-            try await Task.sleep(nanoseconds: 300_000_000)
+            if poll % 5 == 0 {
+                logger.debug("Download poll \(poll)/20 — waiting for object…")
+            }
+            try await Task.sleep(nanoseconds: 200_000_000)
+        }
+
+        // Strategy 2: Wait a bit longer for IC framework file (may be slower)
+        logger.info("No PTP event — waiting for IC framework file…")
+        for poll in 1...25 { // up to 5 more seconds
+            if let file = pendingCaptureFiles.last {
+                logger.info("File detected via IC delegate: \(file.name ?? "?") (\(file.fileSize) bytes)")
+                return try await downloadViaICFramework(file: file)
+            }
+            if poll % 10 == 0 {
+                logger.debug("IC file poll \(poll)/25 — still waiting…")
+            }
+            try await Task.sleep(nanoseconds: 200_000_000)
         }
 
         // Strategy 3: Get latest object handle (brute force)
-        logger.warning("No events — trying GetObjectHandles for latest file…")
+        logger.warning("No events or IC files — trying GetObjectHandles…")
         return try await downloadLatestImage()
     }
 
