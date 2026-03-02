@@ -24,8 +24,12 @@ struct SessionContainerView: View {
             Group {
                 switch sessionVM.phase {
                 case .attract:
-                    AttractScreen(onStart: { sessionVM.startSession() })
-                        .transition(.opacity)
+                    AttractScreen(
+                        isCameraReady: cameraManager.connectionState.isReady,
+                        connectionText: cameraManager.connectionState.displayText,
+                        onStart: { sessionVM.startSession() }
+                    )
+                    .transition(.opacity)
 
                 case .ready:
                     ReadyScreen()

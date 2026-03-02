@@ -24,9 +24,16 @@ final class SessionViewModel: ObservableObject {
 
     // MARK: - Session Control
 
+    /// Whether the camera is connected and ready for a session.
+    var isCameraReady: Bool {
+        cameraManager.connectionState.isReady
+    }
+
     /// Start a new session: attract → ready → countdown.
+    /// Only starts if camera is connected.
     func startSession() {
         guard phase == .attract else { return }
+        guard isCameraReady else { return }
 
         capturedPhotos = []
         currentPhotoIndex = 0
@@ -128,12 +135,9 @@ final class SessionViewModel: ObservableObject {
         }
         HapticManager.medium()
 
-        countdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
+        countdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self else {
-                    timer.invalidate()
-                    return
-                }
+                guard let self else { return }
                 self.countdownTick()
             }
         }
