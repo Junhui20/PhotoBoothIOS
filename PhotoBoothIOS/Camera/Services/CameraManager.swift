@@ -437,16 +437,17 @@ final class CameraManager: NSObject, ObservableObject {
 
     // MARK: - Camera Settings
 
-    /// Parse Canon EOS property-changed events (0xC189) from GetEvent data.
+    /// Parse Canon EOS events from GetEvent (0x9116) data.
     ///
-    /// Canon GetEvent (0x9116) returns multiple event records, each starting with
-    /// `[UInt32 size][UInt32 eventCode]`. Property-changed records (0xC189) have the
-    /// format: `[size=16][code=0xC189][propCode][value]`.
+    /// Each event record: `[UInt32 size][UInt32 eventCode][data...]`
+    ///   - 0xC189 = PropertyChanged: `[size=16][code][propCode][value]`
+    ///   - 0xC18A = AvailListChanged: `[size][code][propCode][count][values...]`
     private func parsePropertyChangedEvents(from data: Data) {
         guard data.count >= 16 else { return }
 
         var offset = 0
         var propsFound = 0
+        var listsFound = 0
 
         while offset + 8 <= data.count {
             let recordLen = Int(data.readUInt32(at: offset))
@@ -457,18 +458,32 @@ final class CameraManager: NSObject, ObservableObject {
             guard offset + recordLen <= data.count else { break }
 
             let eventCode = data.readUInt32(at: offset + 4)
+
             if eventCode == 0xC189 && recordLen >= 16 {
+                // PropertyChanged — current value for a property
                 let propCode = data.readUInt32(at: offset + 8)
                 let value = data.readUInt32(at: offset + 12)
                 applyPropertyValue(propCode: propCode, value: value)
                 propsFound += 1
+            } else if eventCode == 0xC18A && recordLen >= 16 {
+                // AvailListChanged — list of valid values for a property
+                let propCode = data.readUInt32(at: offset + 8)
+                let count = Int(data.readUInt32(at: offset + 12))
+                var values: [UInt32] = []
+                for i in 0..<count {
+                    let valOffset = offset + 16 + i * 4
+                    guard valOffset + 4 <= offset + recordLen else { break }
+                    values.append(data.readUInt32(at: valOffset))
+                }
+                applyAvailableValues(propCode: propCode, values: values)
+                listsFound += 1
             }
 
             offset += recordLen
         }
 
-        if propsFound > 0 {
-            logger.debug("Parsed \(propsFound) property values from event data")
+        if propsFound > 0 || listsFound > 0 {
+            logger.debug("Events parsed: \(propsFound) values, \(listsFound) available-lists")
         }
     }
 
@@ -489,6 +504,30 @@ final class CameraManager: NSObject, ObservableObject {
             cameraSettings.batteryLevel = Int(value)
         case CanonPTP.DeviceProp.availableShots.rawValue:
             cameraSettings.availableShots = Int(value)
+        default:
+            break
+        }
+    }
+
+    /// Apply available-values list from a Canon EOS 0xC18A event.
+    /// These lists tell us which values the camera/lens/mode currently supports.
+    private func applyAvailableValues(propCode: UInt32, values: [UInt32]) {
+        switch propCode {
+        case CanonPTP.DeviceProp.iso.rawValue:
+            cameraSettings.availableISOs = values.compactMap { ISOValue(rawValue: $0) }
+                .filter { $0 != .unknown }
+            logger.info("Available ISOs: \(self.cameraSettings.availableISOs.map(\.displayName))")
+        case CanonPTP.DeviceProp.aperture.rawValue:
+            cameraSettings.availableApertures = values.compactMap { ApertureValue(rawValue: $0) }
+                .filter { $0 != .unknown }
+            logger.info("Available apertures: \(self.cameraSettings.availableApertures.map(\.displayName))")
+        case CanonPTP.DeviceProp.shutterSpeed.rawValue:
+            cameraSettings.availableShutterSpeeds = values.compactMap { ShutterSpeedValue(rawValue: $0) }
+                .filter { $0 != .unknown }
+            logger.info("Available shutter speeds: \(self.cameraSettings.availableShutterSpeeds.map(\.displayName))")
+        case CanonPTP.DeviceProp.exposureComp.rawValue:
+            cameraSettings.availableExposureComps = values.compactMap { ExposureCompValue(rawValue: $0) }
+            logger.info("Available EV comp: \(self.cameraSettings.availableExposureComps.map(\.displayName))")
         default:
             break
         }

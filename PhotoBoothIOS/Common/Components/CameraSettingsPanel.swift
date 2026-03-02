@@ -2,10 +2,12 @@ import SwiftUI
 
 /// Bottom panel showing current camera settings as tappable chips.
 /// Tapping a chip expands a horizontal value picker for that setting.
+/// Only shows values the camera/lens/mode currently supports (from 0xC18A events).
 struct CameraSettingsPanel: View {
 
     @EnvironmentObject var cameraManager: CameraManager
     @Binding var activeSetting: SettingType?
+    @State private var errorMessage: String?
 
     enum SettingType: Equatable {
         case iso, aperture, shutterSpeed, whiteBalance, exposureComp
@@ -14,12 +16,24 @@ struct CameraSettingsPanel: View {
     var body: some View {
         VStack(spacing: 4) {
             chipsBar
+
             if let setting = activeSetting {
                 pickerRow(for: setting)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+
+            // Error message (briefly shown when camera rejects a value)
+            if let error = errorMessage {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundColor(.red)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+                    .transition(.opacity)
+            }
         }
         .animation(.easeInOut(duration: 0.2), value: activeSetting)
+        .animation(.easeInOut(duration: 0.3), value: errorMessage)
     }
 
     // MARK: - Chips Bar
@@ -27,8 +41,8 @@ struct CameraSettingsPanel: View {
     private var chipsBar: some View {
         HStack(spacing: 10) {
             chip("ISO", cameraManager.cameraSettings.iso.displayName, .iso)
-            chip(nil, cameraManager.cameraSettings.aperture.displayName, .aperture)
-            chip(nil, cameraManager.cameraSettings.shutterSpeed.displayName, .shutterSpeed)
+            chip("Av", cameraManager.cameraSettings.aperture.displayName, .aperture)
+            chip("Tv", cameraManager.cameraSettings.shutterSpeed.displayName, .shutterSpeed)
             chip("WB", cameraManager.cameraSettings.whiteBalance.displayName, .whiteBalance)
             chip("EV", cameraManager.cameraSettings.exposureComp.displayName, .exposureComp)
         }
@@ -39,6 +53,7 @@ struct CameraSettingsPanel: View {
         Button {
             withAnimation {
                 activeSetting = activeSetting == setting ? nil : setting
+                errorMessage = nil
             }
         } label: {
             HStack(spacing: 2) {
@@ -71,30 +86,30 @@ struct CameraSettingsPanel: View {
             HStack(spacing: 8) {
                 switch setting {
                 case .iso:
-                    ForEach(ISOValue.selectable) { iso in
+                    ForEach(availableISOs) { iso in
                         valueButton(
                             iso.displayName,
                             isSelected: iso == cameraManager.cameraSettings.iso
                         ) {
-                            Task { try? await cameraManager.setISO(iso) }
+                            applySetting { try await cameraManager.setISO(iso) }
                         }
                     }
                 case .aperture:
-                    ForEach(ApertureValue.selectable) { av in
+                    ForEach(availableApertures) { av in
                         valueButton(
                             av.displayName,
                             isSelected: av == cameraManager.cameraSettings.aperture
                         ) {
-                            Task { try? await cameraManager.setAperture(av) }
+                            applySetting { try await cameraManager.setAperture(av) }
                         }
                     }
                 case .shutterSpeed:
-                    ForEach(ShutterSpeedValue.selectable) { tv in
+                    ForEach(availableShutterSpeeds) { tv in
                         valueButton(
                             tv.displayName,
                             isSelected: tv == cameraManager.cameraSettings.shutterSpeed
                         ) {
-                            Task { try? await cameraManager.setShutterSpeed(tv) }
+                            applySetting { try await cameraManager.setShutterSpeed(tv) }
                         }
                     }
                 case .whiteBalance:
@@ -115,16 +130,16 @@ struct CameraSettingsPanel: View {
                         )
                         .cornerRadius(14)
                         .onTapGesture {
-                            Task { try? await cameraManager.setWhiteBalance(wb) }
+                            applySetting { try await cameraManager.setWhiteBalance(wb) }
                         }
                     }
                 case .exposureComp:
-                    ForEach(ExposureCompValue.allCases) { ev in
+                    ForEach(availableExposureComps) { ev in
                         valueButton(
                             ev.displayName,
                             isSelected: ev == cameraManager.cameraSettings.exposureComp
                         ) {
-                            Task { try? await cameraManager.setExposureComp(ev) }
+                            applySetting { try await cameraManager.setExposureComp(ev) }
                         }
                     }
                 }
@@ -134,6 +149,30 @@ struct CameraSettingsPanel: View {
         .frame(height: 40)
         .background(Color.black.opacity(0.6))
     }
+
+    // MARK: - Available Values (from camera, or fallback to all)
+
+    private var availableISOs: [ISOValue] {
+        let list = cameraManager.cameraSettings.availableISOs
+        return list.isEmpty ? ISOValue.selectable : list
+    }
+
+    private var availableApertures: [ApertureValue] {
+        let list = cameraManager.cameraSettings.availableApertures
+        return list.isEmpty ? ApertureValue.selectable : list
+    }
+
+    private var availableShutterSpeeds: [ShutterSpeedValue] {
+        let list = cameraManager.cameraSettings.availableShutterSpeeds
+        return list.isEmpty ? ShutterSpeedValue.selectable : list
+    }
+
+    private var availableExposureComps: [ExposureCompValue] {
+        let list = cameraManager.cameraSettings.availableExposureComps
+        return list.isEmpty ? ExposureCompValue.allCases : list
+    }
+
+    // MARK: - Helpers
 
     private func valueButton(
         _ label: String,
@@ -149,6 +188,23 @@ struct CameraSettingsPanel: View {
                 .padding(.vertical, 6)
                 .background(isSelected ? Color.yellow : Color.white.opacity(0.2))
                 .cornerRadius(14)
+        }
+    }
+
+    /// Apply a setting change and show error if camera rejects it.
+    private func applySetting(_ action: @escaping () async throws -> Void) {
+        Task {
+            do {
+                try await action()
+                errorMessage = nil
+            } catch {
+                errorMessage = "Camera rejected: \(error.localizedDescription)"
+                // Auto-dismiss after 3 seconds
+                Task {
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    errorMessage = nil
+                }
+            }
         }
     }
 }

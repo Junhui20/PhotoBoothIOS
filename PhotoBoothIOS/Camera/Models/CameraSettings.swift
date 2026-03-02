@@ -12,8 +12,15 @@ struct CameraSettings {
     var shutterSpeed: ShutterSpeedValue = .unknown
     var whiteBalance: WhiteBalanceValue = .auto
     var exposureComp: ExposureCompValue = .zero
-    var batteryLevel: Int = -1       // 0-100, -1 = unknown
+    var batteryLevel: Int = -1       // Canon EOS: 0=critical, 1=low, 2=half, 3=full. -1=unknown
     var availableShots: Int = -1
+
+    // Available values reported by camera (from 0xC18A AvailListChanged events).
+    // When non-empty, only these values can be set on the current camera/lens/mode.
+    var availableISOs: [ISOValue] = []
+    var availableApertures: [ApertureValue] = []
+    var availableShutterSpeeds: [ShutterSpeedValue] = []
+    var availableExposureComps: [ExposureCompValue] = []
 }
 
 // MARK: - ISO Values (Canon EOS hex encoding)

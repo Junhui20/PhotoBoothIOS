@@ -78,11 +78,11 @@ struct ContentView: View {
 
             if cameraManager.connectionState.isReady {
                 HStack(spacing: 12) {
-                    // Battery level
+                    // Battery level (Canon EOS reports 0-3 scale, not percentage)
                     if cameraManager.cameraSettings.batteryLevel >= 0 {
                         HStack(spacing: 3) {
                             Image(systemName: batteryIconName)
-                            Text("\(cameraManager.cameraSettings.batteryLevel)%")
+                            Text(batteryDisplayText)
                                 .font(.caption)
                         }
                         .foregroundColor(batteryColor)
@@ -189,23 +189,38 @@ struct ContentView: View {
     }
 
     // MARK: - Battery Helpers
+    // Canon EOS cameras report battery as 0-3 levels (not 0-100 percentage):
+    //   0 = critical, 1 = low, 2 = half, 3 = full
 
     private var batteryIconName: String {
         let level = cameraManager.cameraSettings.batteryLevel
         switch level {
-        case 0..<10:  return "battery.0percent"
-        case 10..<35: return "battery.25percent"
-        case 35..<65: return "battery.50percent"
-        case 65..<90: return "battery.75percent"
-        default:      return "battery.100percent"
+        case 0:  return "battery.0percent"
+        case 1:  return "battery.25percent"
+        case 2:  return "battery.50percent"
+        case 3:  return "battery.100percent"
+        default: return "battery.100percent"
+        }
+    }
+
+    private var batteryDisplayText: String {
+        let level = cameraManager.cameraSettings.batteryLevel
+        switch level {
+        case 0:  return "Low!"
+        case 1:  return "Low"
+        case 2:  return "OK"
+        case 3:  return "Full"
+        default: return ""
         }
     }
 
     private var batteryColor: Color {
         let level = cameraManager.cameraSettings.batteryLevel
-        if level < 15 { return .red }
-        if level < 30 { return .orange }
-        return .green
+        switch level {
+        case 0:  return .red
+        case 1:  return .orange
+        default: return .green
+        }
     }
 
     // MARK: - Captured Photo Overlay
