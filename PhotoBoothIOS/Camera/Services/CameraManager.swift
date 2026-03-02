@@ -393,28 +393,67 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     /// Canon-specific capture via RemoteReleaseOn/Off.
+    /// Strategy: try immediate capture first, then separate focus+release with busy retry.
     private func captureViaRemoteRelease() async throws -> CapturedPhoto {
-        // Half-press for autofocus
-        _ = try await sendPTPCommand(
-            opCode: CanonPTP.CanonOpCode.remoteReleaseOn.rawValue,
-            params: [CanonPTP.ReleaseParam.focus.rawValue, 0x00]
-        )
-        try await Task.sleep(nanoseconds: 300_000_000) // AF lock
+        // Strategy 1: Immediate capture (focus + release combined, param=3)
+        var shutterTriggered = false
+        do {
+            _ = try await sendPTPCommand(
+                opCode: CanonPTP.CanonOpCode.remoteReleaseOn.rawValue,
+                params: [CanonPTP.ReleaseParam.immediate.rawValue, 0x00]
+            )
+            logger.info("RemoteReleaseOn(immediate) succeeded — shutter fired")
+            shutterTriggered = true
+        } catch {
+            logger.info("Immediate capture not supported, trying focus + release…")
 
-        // Full press — shutter fires
-        _ = try await sendPTPCommand(
-            opCode: CanonPTP.CanonOpCode.remoteReleaseOn.rawValue,
-            params: [CanonPTP.ReleaseParam.release.rawValue, 0x00]
-        )
-        try await Task.sleep(nanoseconds: 200_000_000)
+            // Strategy 2: Separate half-press (AF) then full-press (release)
+            do {
+                _ = try await sendPTPCommand(
+                    opCode: CanonPTP.CanonOpCode.remoteReleaseOn.rawValue,
+                    params: [CanonPTP.ReleaseParam.focus.rawValue, 0x00]
+                )
+                logger.info("RemoteReleaseOn(focus) succeeded — AF started")
+                shutterTriggered = true // AF half-press may trigger capture on some cameras
+            } catch {
+                logger.warning("RemoteReleaseOn(focus) failed: \(error.localizedDescription)")
+                throw error
+            }
 
-        // Release shutter
-        _ = try await sendPTPCommand(
+            // Wait longer for AF to lock (300ms was too short → 0x2019 Busy)
+            try await Task.sleep(nanoseconds: 800_000_000)
+
+            // Full press with retry on DeviceBusy (0x2019)
+            for attempt in 1...5 {
+                do {
+                    _ = try await sendPTPCommand(
+                        opCode: CanonPTP.CanonOpCode.remoteReleaseOn.rawValue,
+                        params: [CanonPTP.ReleaseParam.release.rawValue, 0x00]
+                    )
+                    logger.info("RemoteReleaseOn(release) succeeded on attempt \(attempt)")
+                    break
+                } catch {
+                    logger.warning("Release attempt \(attempt)/5 failed: \(error.localizedDescription)")
+                    if attempt < 5 {
+                        try await Task.sleep(nanoseconds: 400_000_000)
+                    }
+                    // Don't re-throw — camera may have already captured from half-press
+                }
+            }
+        }
+
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        // Release shutter button (fire-and-forget)
+        _ = try? await sendPTPCommand(
             opCode: CanonPTP.CanonOpCode.remoteReleaseOff.rawValue,
             params: [0x03]
         )
 
-        // Poll events for ObjectAdded, then download
+        // Always try to download — camera may have captured even if release failed
+        guard shutterTriggered else {
+            throw PhotoBoothError.ptpCommandFailed("Shutter never triggered")
+        }
         return try await waitForCaptureAndDownload()
     }
 
