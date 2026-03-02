@@ -53,6 +53,12 @@ struct ContentView: View {
         }
         .onAppear { cameraManager.startScanning() }
         .onDisappear { cameraManager.stopScanning() }
+        // Auto-show overlay when camera's physical shutter captures a photo
+        .onChange(of: cameraManager.lastCapturedPhoto?.id) { _ in
+            if !showCapturedPhoto {
+                showCapturedPhoto = true
+            }
+        }
         .alert("Error", isPresented: $showError) {
             Button("OK", role: .cancel) {}
         } message: {

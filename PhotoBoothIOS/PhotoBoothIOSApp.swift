@@ -15,9 +15,26 @@ struct PhotoBoothIOSApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            SessionRootView(cameraManager: cameraManager)
                 .environmentObject(cameraManager)
                 .preferredColorScheme(.dark)
+                .statusBarHidden(true)
         }
     }
 }
+
+/// Wrapper that creates and owns SessionViewModel as @StateObject.
+///
+/// This avoids re-creating SessionViewModel each time the parent body evaluates.
+struct SessionRootView: View {
+    @StateObject private var sessionVM: SessionViewModel
+
+    init(cameraManager: CameraManager) {
+        _sessionVM = StateObject(wrappedValue: SessionViewModel(cameraManager: cameraManager))
+    }
+
+    var body: some View {
+        SessionContainerView(sessionVM: sessionVM)
+    }
+}
+

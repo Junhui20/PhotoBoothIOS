@@ -35,6 +35,10 @@ final class CameraManager: NSObject, ObservableObject {
     /// Cleared before each capture, populated when camera writes a new image.
     private var pendingCaptureFiles: [ICCameraFile] = []
 
+    /// Last object handle processed by background event polling.
+    /// Prevents downloading the same photo twice when camera shutter is pressed.
+    private var lastHandledObjectHandle: UInt32 = 0
+
     // MARK: - Lifecycle
 
     override init() {
@@ -102,6 +106,7 @@ final class CameraManager: NSObject, ObservableObject {
         liveViewImage = nil
         lastCapturedPhoto = nil
         capturePreviewImage = nil
+        lastHandledObjectHandle = 0
     }
 
     // MARK: - PTP Transaction ID
@@ -395,12 +400,31 @@ final class CameraManager: NSObject, ObservableObject {
                     logger.debug("No JPEG found in \(data.count)-byte payload: \(data.hexPrefix(64))")
                 }
 
-                // Periodically poll events for settings changes (~every 3s)
-                if framesReceived % 90 == 0 {
+                // Poll events for settings changes + camera-initiated captures (~every 1s)
+                if framesReceived % 30 == 0 {
                     if let eventData = try? await sendPTPCommand(
                         opCode: CanonPTP.CanonOpCode.getEvent.rawValue
                     ), !eventData.isEmpty {
                         parsePropertyChangedEvents(from: eventData)
+
+                        // Detect photos taken via camera's physical shutter button
+                        if !isCapturing,
+                           let handle = parseObjectAddedEvent(from: eventData),
+                           handle != lastHandledObjectHandle {
+                            lastHandledObjectHandle = handle
+                            logger.info("Camera-initiated capture detected — handle 0x\(String(handle, radix: 16))")
+                            capturePreviewImage = liveViewImage
+                            isCapturing = true
+                            do {
+                                let photo = try await downloadObject(handle: handle)
+                                lastCapturedPhoto = photo
+                                logger.info("Background capture downloaded: \(photo.imageData.count) bytes")
+                            } catch {
+                                logger.error("Background capture download failed: \(error.localizedDescription)")
+                            }
+                            capturePreviewImage = nil
+                            isCapturing = false
+                        }
                     }
                 }
 
