@@ -103,8 +103,13 @@ final class CameraManager: NSObject, ObservableObject {
 
     // MARK: - PTP Command Sending
 
-    /// Send a PTP command and return the response data.
-    /// Bug #2 fix: uses `ptpResponseData ?? responseData` to capture actual payload.
+    /// Send a PTP command and return the data-phase payload.
+    ///
+    /// Apple's `requestSendPTPCommand` completion gives two Data params:
+    ///   - 1st (`responseData`): the DATA-phase payload (JPEG, events, object data, device info…)
+    ///   - 2nd (`ptpResponseData`): the 12-byte PTP RESPONSE container (status code + txID)
+    ///
+    /// We return the data payload to callers and check the status container for errors.
     func sendPTPCommand(
         opCode: UInt16,
         params: [UInt32] = [],
@@ -129,22 +134,35 @@ final class CameraManager: NSObject, ObservableObject {
                 outData: outData ?? Data()
             ) { [weak self] responseData, ptpResponseData, error in
                 if let error {
-                    self?.logger.error("PTP error: \(error.localizedDescription)")
+                    self?.logger.error("PTP framework error: \(error.localizedDescription)")
                     continuation.resume(throwing: error)
                     return
                 }
 
-                // Bug #2 fix: prefer ptpResponseData (actual payload) over responseData (PTP header)
-                let data = ptpResponseData.isEmpty ? responseData : ptpResponseData
-
-                self?.logger.debug("PTP RX [\(data.count) bytes] \(data.hexPrefix(64))")
-
-                if responseData.count >= 8 {
-                    let respCode = responseData.readUInt16(at: 6)
-                    self?.logger.debug("PTP response code: 0x\(String(respCode, radix: 16))")
+                // responseData    = DATA-phase payload (what callers need)
+                // ptpResponseData = RESPONSE container  (12-byte status header)
+                self?.logger.debug("PTP RX payload=\(responseData.count)B status=\(ptpResponseData.count)B")
+                if !responseData.isEmpty {
+                    self?.logger.debug("  payload head: \(responseData.hexPrefix(64))")
                 }
 
-                continuation.resume(returning: data)
+                // Check PTP response code from the status container
+                if ptpResponseData.count >= 8 {
+                    let respCode = ptpResponseData.readUInt16(at: 6)
+                    self?.logger.debug("  PTP status: 0x\(String(respCode, radix: 16))")
+
+                    if respCode != 0x2001 && respCode != 0x0000 {
+                        let hex = String(respCode, radix: 16)
+                        self?.logger.warning("PTP command 0x\(String(opCode, radix: 16)) failed: 0x\(hex)")
+                        continuation.resume(
+                            throwing: PhotoBoothError.ptpCommandFailed("0x\(hex)")
+                        )
+                        return
+                    }
+                }
+
+                // Return the data-phase payload (may be empty for void commands)
+                continuation.resume(returning: responseData)
             }
         }
     }
@@ -282,6 +300,7 @@ final class CameraManager: NSObject, ObservableObject {
 
         // Step 2: Poll GetViewFinderData in a loop
         var consecutiveErrors = 0
+        var framesReceived = 0
         let maxErrors = 15
 
         while !Task.isCancelled && isLiveViewActive {
@@ -293,9 +312,21 @@ final class CameraManager: NSObject, ObservableObject {
 
                 consecutiveErrors = 0
 
+                if data.isEmpty {
+                    logger.debug("GetViewFinderData returned empty payload")
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    continue
+                }
+
                 if let jpegData = data.findJPEGData(),
                    let image = UIImage(data: jpegData) {
                     liveViewImage = image
+                    framesReceived += 1
+                    if framesReceived <= 3 || framesReceived % 100 == 0 {
+                        logger.info("Live view frame #\(framesReceived): \(jpegData.count) bytes, \(Int(image.size.width))×\(Int(image.size.height))")
+                    }
+                } else {
+                    logger.debug("No JPEG found in \(data.count)-byte payload: \(data.hexPrefix(32))")
                 }
 
                 // ~30fps target
@@ -421,20 +452,35 @@ final class CameraManager: NSObject, ObservableObject {
         return try await downloadLatestImage()
     }
 
-    /// Parse Canon event data for ObjectAdded (0xC101).
-    /// Canon event format: [UInt32 length][UInt32 eventCode][UInt32 params...]
+    /// Parse Canon EOS event data for ObjectAdded / ObjectAddedEx.
+    /// Canon event format: [UInt32 recordSize][UInt32 eventCode][UInt32 params...]
+    /// Event codes: 0xC101 = RequestObjectTransfer, 0xC181 = ObjectAddedEx (newer cameras).
     private func parseObjectAddedEvent(from data: Data) -> UInt32? {
-        guard data.count >= 12 else { return nil }
+        guard data.count >= 8 else { return nil }
+
+        logger.debug("Parsing events from \(data.count) bytes: \(data.hexPrefix(128))")
 
         var offset = 0
         while offset + 8 <= data.count {
             let recordLen = Int(data.readUInt32(at: offset))
-            guard recordLen >= 8, offset + recordLen <= data.count else { break }
+            guard recordLen >= 8 else {
+                // Skip malformed record
+                offset += 4
+                continue
+            }
+            guard offset + recordLen <= data.count else { break }
 
             let eventCode = data.readUInt32(at: offset + 4)
-            if eventCode == 0xC101 && recordLen >= 12 {
+            logger.debug("  Event record: size=\(recordLen) code=0x\(String(eventCode, radix: 16))")
+
+            // Check both ObjectAdded variants
+            let isObjectAdded = (eventCode == 0xC101 || eventCode == 0xC181)
+            if isObjectAdded && recordLen >= 12 {
                 let handle = data.readUInt32(at: offset + 8)
-                if handle != 0 { return handle }
+                if handle != 0 {
+                    logger.info("  → ObjectAdded handle=0x\(String(handle, radix: 16))")
+                    return handle
+                }
             }
 
             offset += recordLen
