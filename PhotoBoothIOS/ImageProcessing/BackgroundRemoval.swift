@@ -159,7 +159,7 @@ final class BackgroundRemoval {
             let scale = max(scaleX, scaleY)
             return bgCI.transformed(by: CGAffineTransform(scaleX: scale, y: scale)).cropped(to: size)
 
-        case .blurred(let radius):
+        case .blurred:
             // This will be composited with the original image's blurred version
             // We return a placeholder; the caller should use the blurred original
             return CIImage(color: .black).cropped(to: size)

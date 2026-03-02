@@ -47,7 +47,7 @@ final class ProcessingPipeline {
         }
 
         // Step 2: Background removal (if requested)
-        if let bgType = background, !(bgType is BackgroundType) || !isOriginal(bgType) {
+        if let bgType = background, !isOriginal(bgType) {
             processed = try await backgroundRemoval.removeBackground(
                 from: processed,
                 replacement: bgType

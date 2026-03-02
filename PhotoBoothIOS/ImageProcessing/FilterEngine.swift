@@ -5,20 +5,22 @@ import UIKit
 // MARK: - Photo Filter Definition
 
 /// A photo filter that transforms a CIImage using CoreImage.
-struct PhotoFilter: Identifiable, Equatable {
+///
+/// Sendable + nonisolated so filters can be used from background threads.
+struct PhotoFilter: Identifiable, Equatable, Sendable {
     let id: String
     let name: String
     let iconName: String
-    let apply: (CIImage) -> CIImage
+    let apply: @Sendable (CIImage) -> CIImage
 
-    static func == (lhs: PhotoFilter, rhs: PhotoFilter) -> Bool {
+    nonisolated static func == (lhs: PhotoFilter, rhs: PhotoFilter) -> Bool {
         lhs.id == rhs.id
     }
 }
 
 // MARK: - Built-in Filters
 
-extension PhotoFilter {
+nonisolated extension PhotoFilter {
 
     /// All available built-in filters.
     static let allFilters: [PhotoFilter] = [
@@ -153,14 +155,15 @@ extension PhotoFilter {
 /// Applies filters to images using a shared Metal-backed CIContext.
 ///
 /// Use the shared instance to avoid creating multiple expensive CIContexts.
-final class FilterEngine {
+/// Thread-safe — CIContext is safe to use from any thread.
+final class FilterEngine: @unchecked Sendable {
 
-    static let shared = FilterEngine()
+    nonisolated static let shared = FilterEngine()
 
     /// Metal-backed CIContext — expensive to create, reuse across all filter operations.
-    let ciContext: CIContext
+    nonisolated let ciContext: CIContext
 
-    private init() {
+    nonisolated private init() {
         if let device = MTLCreateSystemDefaultDevice() {
             ciContext = CIContext(mtlDevice: device, options: [
                 .workingColorSpace: CGColorSpaceCreateDeviceRGB(),
@@ -174,7 +177,7 @@ final class FilterEngine {
     }
 
     /// Apply a filter to a UIImage and return the result.
-    func applyFilter(_ filter: PhotoFilter, to image: UIImage) -> UIImage {
+    nonisolated func applyFilter(_ filter: PhotoFilter, to image: UIImage) -> UIImage {
         guard let ciImage = CIImage(image: image) else { return image }
 
         let filtered = filter.apply(ciImage)
@@ -187,7 +190,7 @@ final class FilterEngine {
 
     /// Generate a small thumbnail preview of a filter applied to an image.
     /// Resizes input first for fast thumbnail generation.
-    func generateThumbnail(
+    nonisolated func generateThumbnail(
         _ filter: PhotoFilter,
         from image: UIImage,
         size: CGSize = CGSize(width: 80, height: 80)
@@ -198,12 +201,12 @@ final class FilterEngine {
     }
 
     /// Apply a filter to a CIImage (for live view pipeline).
-    func applyFilter(_ filter: PhotoFilter, to ciImage: CIImage) -> CIImage {
+    nonisolated func applyFilter(_ filter: PhotoFilter, to ciImage: CIImage) -> CIImage {
         filter.apply(ciImage)
     }
 
     /// Render a CIImage to UIImage using the shared context.
-    func renderToUIImage(_ ciImage: CIImage) -> UIImage? {
+    nonisolated func renderToUIImage(_ ciImage: CIImage) -> UIImage? {
         let extent = ciImage.extent
         guard let cgImage = ciContext.createCGImage(ciImage, from: extent) else { return nil }
         return UIImage(cgImage: cgImage)

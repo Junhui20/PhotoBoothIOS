@@ -75,15 +75,14 @@ struct FilterPickerView: View {
 
         Task.detached(priority: .userInitiated) {
             let engine = FilterEngine.shared
-            var results: [String: UIImage] = [:]
-
-            for filter in PhotoFilter.allFilters {
-                let thumb = engine.generateThumbnail(filter, from: image, size: CGSize(width: 128, height: 128))
-                results[filter.id] = thumb
+            let filters = PhotoFilter.allFilters
+            let pairs = filters.map { filter in
+                (filter.id, engine.generateThumbnail(filter, from: image, size: CGSize(width: 128, height: 128)))
             }
+            let newThumbnails = Dictionary(uniqueKeysWithValues: pairs)
 
             await MainActor.run {
-                thumbnails = results
+                thumbnails = newThumbnails
                 isGenerating = false
             }
         }
