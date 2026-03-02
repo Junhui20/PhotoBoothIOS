@@ -8,6 +8,9 @@ struct SessionContainerView: View {
 
     @ObservedObject var sessionVM: SessionViewModel
     @EnvironmentObject var cameraManager: CameraManager
+    @State private var showSettings = false
+    @State private var activeSetting: CameraSettingsPanel.SettingType?
+    @State private var isManualMode: Bool = false
 
     var body: some View {
         ZStack {
@@ -27,7 +30,8 @@ struct SessionContainerView: View {
                     AttractScreen(
                         isCameraReady: cameraManager.connectionState.isReady,
                         connectionText: cameraManager.connectionState.displayText,
-                        onStart: { sessionVM.startSession() }
+                        onStart: { sessionVM.startSession() },
+                        onSettings: { showSettings = true }
                     )
                     .transition(.opacity)
 
@@ -99,6 +103,9 @@ struct SessionContainerView: View {
         .onChange(of: cameraManager.lastCapturedPhoto?.id) { _ in
             handleExternalCapture()
         }
+        .sheet(isPresented: $showSettings) {
+            settingsSheet
+        }
     }
 
     // MARK: - Status Bar
@@ -150,6 +157,44 @@ struct SessionContainerView: View {
         .padding(.vertical, 12)
         .background(Color.black.opacity(0.6))
         .cornerRadius(20)
+    }
+
+    // MARK: - Settings Sheet
+
+    private var settingsSheet: some View {
+        NavigationView {
+            VStack(spacing: 0) {
+                // Live view preview at top
+                LiveViewDisplay(
+                    image: cameraManager.liveViewImage,
+                    isConnected: cameraManager.connectionState.isReady
+                )
+                .aspectRatio(3.0 / 2.0, contentMode: .fit)
+                .cornerRadius(12)
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+
+                // Camera settings panel
+                CameraSettingsPanel(
+                    activeSetting: $activeSetting,
+                    isManualMode: $isManualMode
+                )
+                .padding(.top, 8)
+
+                Spacer()
+            }
+            .background(Color.black)
+            .navigationTitle("Camera Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") {
+                        showSettings = false
+                    }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
     }
 
     // MARK: - External Capture Handling
