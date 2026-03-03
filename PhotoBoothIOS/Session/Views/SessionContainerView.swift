@@ -11,6 +11,9 @@ struct SessionContainerView: View {
     @State private var showSettings = false
     @State private var activeSetting: CameraSettingsPanel.SettingType?
     @State private var isManualMode: Bool = false
+    @State private var settingsTab: SettingsTab = .camera
+
+    private enum SettingsTab { case camera, printer }
 
     var body: some View {
         ZStack {
@@ -168,27 +171,42 @@ struct SessionContainerView: View {
     private var settingsSheet: some View {
         NavigationView {
             VStack(spacing: 0) {
-                // Live view preview at top
-                LiveViewDisplay(
-                    image: cameraManager.liveViewImage,
-                    isConnected: cameraManager.connectionState.isReady
-                )
-                .aspectRatio(3.0 / 2.0, contentMode: .fit)
-                .cornerRadius(12)
+                // Tab picker
+                Picker("Settings", selection: $settingsTab) {
+                    Text("Camera").tag(SettingsTab.camera)
+                    Text("Printer").tag(SettingsTab.printer)
+                }
+                .pickerStyle(.segmented)
                 .padding(.horizontal, 16)
                 .padding(.top, 8)
 
-                // Camera settings panel
-                CameraSettingsPanel(
-                    activeSetting: $activeSetting,
-                    isManualMode: $isManualMode
-                )
-                .padding(.top, 8)
+                // Tab content
+                switch settingsTab {
+                case .camera:
+                    LiveViewDisplay(
+                        image: cameraManager.liveViewImage,
+                        isConnected: cameraManager.connectionState.isReady
+                    )
+                    .aspectRatio(3.0 / 2.0, contentMode: .fit)
+                    .cornerRadius(12)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+
+                    CameraSettingsPanel(
+                        activeSetting: $activeSetting,
+                        isManualMode: $isManualMode
+                    )
+                    .padding(.top, 8)
+
+                case .printer:
+                    PrinterSettingsPanel()
+                        .padding(.top, 16)
+                }
 
                 Spacer()
             }
             .background(Color.black)
-            .navigationTitle("Camera Settings")
+            .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {

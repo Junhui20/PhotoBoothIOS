@@ -9,7 +9,7 @@ struct PrintPreviewView: View {
 
     let photos: [UIImage]
     let textValues: [String: String]
-    @ObservedObject var printService: PrintService
+    @EnvironmentObject var printService: PrintService
 
     @State private var selectedTemplate: PrintLayout = PrintTemplates.photoCard
     @State private var previewImage: UIImage?
@@ -45,6 +45,7 @@ struct PrintPreviewView: View {
         }
         .preferredColorScheme(.dark)
         .onAppear {
+            copies = printService.defaultCopies
             selectBestTemplate()
             generatePreview()
         }

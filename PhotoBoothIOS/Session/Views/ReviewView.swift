@@ -188,7 +188,7 @@ struct ReviewView: View {
                 finalImage = (try? await removal.removeBackground(
                     from: filtered,
                     replacement: bgType,
-                    quality: .fast
+                    quality: .balanced
                 )) ?? filtered
             } else {
                 finalImage = filtered

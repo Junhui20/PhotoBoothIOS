@@ -3,6 +3,7 @@ import SwiftUI
 /// Share/complete screen with sharing options.
 ///
 /// Print is functional (Task 05). Email, QR, AirDrop are placeholders for Task 06.
+/// Supports auto-print in kiosk mode (prints automatically and advances).
 struct ShareView: View {
 
     let photos: [CapturedPhoto]
@@ -10,11 +11,13 @@ struct ShareView: View {
     let selectedBackground: BackgroundOption
     let onDone: () -> Void
 
+    @EnvironmentObject var printService: PrintService
+
     @State private var saved = false
     @State private var showPrintPreview = false
     @State private var processedImages: [UIImage] = []
     @State private var isProcessing = false
-    @StateObject private var printService = PrintService()
+    @State private var isAutoPrinting = false
 
     var body: some View {
         ZStack {
@@ -93,15 +96,33 @@ struct ShareView: View {
                 }
             }
             .padding(32)
+
+            // Auto-print overlay
+            if isAutoPrinting {
+                Color.black.opacity(0.7)
+                    .ignoresSafeArea()
+                VStack(spacing: 16) {
+                    ProgressView()
+                        .tint(.white)
+                        .scaleEffect(1.5)
+                    Text("Printing...")
+                        .font(.title2.weight(.semibold))
+                        .foregroundColor(.white)
+                }
+            }
         }
         .sheet(isPresented: $showPrintPreview) {
             PrintPreviewView(
                 photos: processedImages.isEmpty ? photos.compactMap(\.uiImage) : processedImages,
-                textValues: defaultTextValues,
-                printService: printService
+                textValues: defaultTextValues
             )
         }
-        .onAppear { processPhotos() }
+        .onAppear {
+            processPhotos()
+            if printService.autoPrint && printService.defaultPrinter != nil {
+                triggerAutoPrint()
+            }
+        }
     }
 
     // MARK: - Text Values
@@ -149,6 +170,62 @@ struct ShareView: View {
             }
             processedImages = results
             isProcessing = false
+        }
+    }
+
+    private func triggerAutoPrint() {
+        isAutoPrinting = true
+        let textCopy = defaultTextValues
+        let paperSize = printService.defaultPaperSize
+        let numCopies = printService.defaultCopies
+
+        Task {
+            // Wait for photo processing to finish
+            while processedImages.isEmpty && isProcessing {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+
+            let images = processedImages.isEmpty ? photos.compactMap(\.uiImage) : processedImages
+            guard !images.isEmpty else {
+                isAutoPrinting = false
+                return
+            }
+
+            // Find best template for current photos
+            let template = PrintTemplates.all
+                .first(where: { $0.requiredPhotoCount <= images.count })
+                ?? PrintTemplates.photoCard
+
+            // Render at 300 DPI on background thread
+            let renderResult = await Task.detached(priority: .userInitiated) {
+                PrintLayoutRenderer.shared.render(
+                    layout: template,
+                    photos: images,
+                    textValues: textCopy,
+                    dpi: 300
+                )
+            }.value
+
+            switch renderResult {
+            case .success(let printImage):
+                let config = PrintJobConfig(
+                    image: printImage,
+                    paperSize: paperSize,
+                    orientation: template.orientation,
+                    copies: numCopies
+                )
+                let result = await printService.printImage(config: config)
+                isAutoPrinting = false
+
+                if case .success(true) = result {
+                    HapticManager.success()
+                    try? await Task.sleep(for: .seconds(1.5))
+                    onDone()
+                }
+
+            case .failure:
+                isAutoPrinting = false
+            }
         }
     }
 

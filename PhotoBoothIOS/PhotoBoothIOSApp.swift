@@ -12,13 +12,17 @@ struct PhotoBoothIOSApp: App {
 
     // Single CameraManager instance — injected into all views via .environmentObject
     @StateObject private var cameraManager = CameraManager()
+    // Single PrintService instance — shared across settings, share, and print views
+    @StateObject private var printService = PrintService()
 
     var body: some Scene {
         WindowGroup {
             SessionRootView(cameraManager: cameraManager)
                 .environmentObject(cameraManager)
+                .environmentObject(printService)
                 .preferredColorScheme(.dark)
                 .statusBarHidden(true)
+                .onAppear { printService.restoreDefaults() }
         }
     }
 }

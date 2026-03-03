@@ -23,6 +23,7 @@ enum BackgroundType: @unchecked Sendable {
 ///
 /// Uses `VNGeneratePersonSegmentationRequest` (iOS 15+).
 /// Quality levels: `.fast` for preview, `.accurate` for final output.
+/// Applies mask refinement (erode → dilate → feather) for smooth natural edges.
 /// Thread-safe — all methods are nonisolated for background rendering.
 final class BackgroundRemoval: @unchecked Sendable {
 
@@ -37,7 +38,7 @@ final class BackgroundRemoval: @unchecked Sendable {
     /// - Parameters:
     ///   - image: The input photo as CIImage
     ///   - quality: Segmentation quality (.fast for preview, .accurate for final)
-    /// - Returns: A grayscale mask CIImage (white = person, black = background)
+    /// - Returns: A refined grayscale mask CIImage (white = person, black = background)
     nonisolated func generateMask(
         from image: CIImage,
         quality: VNGeneratePersonSegmentationRequest.QualityLevel = .balanced
@@ -65,7 +66,10 @@ final class BackgroundRemoval: @unchecked Sendable {
                 let scaleY = image.extent.height / maskImage.extent.height
                 let scaledMask = maskImage.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
 
-                continuation.resume(returning: scaledMask)
+                // Refine mask edges for natural-looking compositing
+                let refined = refineMask(scaledMask, quality: quality, imageSize: image.extent.size)
+
+                continuation.resume(returning: refined)
             } catch {
                 continuation.resume(throwing: error)
             }
@@ -89,8 +93,8 @@ final class BackgroundRemoval: @unchecked Sendable {
 
         let mask = try await generateMask(from: image, quality: quality)
 
-        // Create the replacement background
-        let background = createBackground(for: replacement, size: image.extent)
+        // Create the replacement background (pass original for .blurred case)
+        let background = createBackground(for: replacement, size: image.extent, originalImage: image)
 
         // Composite: person (masked from original) over new background
         let blendFilter = CIFilter.blendWithMask()
@@ -124,9 +128,92 @@ final class BackgroundRemoval: @unchecked Sendable {
         return UIImage(cgImage: cgImage, scale: photo.scale, orientation: photo.imageOrientation)
     }
 
-    // MARK: - Private
+    // MARK: - Mask Refinement
 
-    nonisolated private func createBackground(for type: BackgroundType, size: CGRect) -> CIImage {
+    /// Refine segmentation mask with morphological operations and feathering.
+    ///
+    /// Pipeline: erode → dilate → median denoise → Gaussian feather.
+    /// Feathering radius scales with image resolution for consistent results across sizes.
+    nonisolated private func refineMask(
+        _ mask: CIImage,
+        quality: VNGeneratePersonSegmentationRequest.QualityLevel,
+        imageSize: CGSize
+    ) -> CIImage {
+        let maxDimension = max(imageSize.width, imageSize.height)
+        var refined = mask
+
+        switch quality {
+        case .fast:
+            // Thumbnails: feathering only (morphology too expensive for tiny images)
+            let featherRadius = max(1.0, maxDimension * 0.003)
+            refined = applyGaussianBlur(to: refined, radius: featherRadius)
+
+        case .balanced:
+            // Review preview: light morphology + feathering
+            let erodeRadius = max(0.5, maxDimension * 0.0004)
+            let dilateRadius = max(0.3, maxDimension * 0.00025)
+            let featherRadius = max(1.5, maxDimension * 0.0025)
+
+            refined = applyMorphologyMinimum(to: refined, radius: erodeRadius)
+            refined = applyMorphologyMaximum(to: refined, radius: dilateRadius)
+            refined = applyGaussianBlur(to: refined, radius: featherRadius)
+
+        case .accurate:
+            // Final output: full pipeline
+            let erodeRadius = max(0.5, maxDimension * 0.0003)
+            let dilateRadius = max(0.3, maxDimension * 0.0002)
+            let featherRadius = max(1.5, maxDimension * 0.002)
+
+            refined = applyMorphologyMinimum(to: refined, radius: erodeRadius)
+            refined = applyMorphologyMaximum(to: refined, radius: dilateRadius)
+            refined = applyMedianFilter(to: refined)
+            refined = applyGaussianBlur(to: refined, radius: featherRadius)
+
+        @unknown default:
+            let featherRadius = max(1.5, maxDimension * 0.002)
+            refined = applyGaussianBlur(to: refined, radius: featherRadius)
+        }
+
+        return refined
+    }
+
+    // MARK: - CIFilter Helpers
+
+    nonisolated private func applyGaussianBlur(to image: CIImage, radius: CGFloat) -> CIImage {
+        let filter = CIFilter.gaussianBlur()
+        filter.inputImage = image
+        filter.radius = Float(radius)
+        // Clamp to avoid edge darkening from blur extending past image bounds
+        return filter.outputImage?.clamped(to: image.extent) ?? image
+    }
+
+    nonisolated private func applyMorphologyMinimum(to image: CIImage, radius: CGFloat) -> CIImage {
+        let filter = CIFilter.morphologyMinimum()
+        filter.inputImage = image
+        filter.radius = Float(radius)
+        return filter.outputImage ?? image
+    }
+
+    nonisolated private func applyMorphologyMaximum(to image: CIImage, radius: CGFloat) -> CIImage {
+        let filter = CIFilter.morphologyMaximum()
+        filter.inputImage = image
+        filter.radius = Float(radius)
+        return filter.outputImage ?? image
+    }
+
+    nonisolated private func applyMedianFilter(to image: CIImage) -> CIImage {
+        let filter = CIFilter.medianFilter()
+        filter.inputImage = image
+        return filter.outputImage ?? image
+    }
+
+    // MARK: - Background Creation
+
+    nonisolated private func createBackground(
+        for type: BackgroundType,
+        size: CGRect,
+        originalImage: CIImage? = nil
+    ) -> CIImage {
         switch type {
         case .original:
             return CIImage(color: .clear).cropped(to: size)
@@ -138,7 +225,6 @@ final class BackgroundRemoval: @unchecked Sendable {
             return CIImage(color: color).cropped(to: size)
 
         case .gradient(let topColor, let bottomColor):
-            // Use a vertical gradient
             let gradientFilter = CIFilter.linearGradient()
             gradientFilter.point0 = CGPoint(x: size.midX, y: size.minY)
             gradientFilter.point1 = CGPoint(x: size.midX, y: size.maxY)
@@ -157,16 +243,22 @@ final class BackgroundRemoval: @unchecked Sendable {
             guard let bgCI = CIImage(image: bgImage) else {
                 return CIImage(color: .black).cropped(to: size)
             }
-            // Scale background image to fill the target size
             let scaleX = size.width / bgCI.extent.width
             let scaleY = size.height / bgCI.extent.height
             let scale = max(scaleX, scaleY)
             return bgCI.transformed(by: CGAffineTransform(scaleX: scale, y: scale)).cropped(to: size)
 
-        case .blurred:
-            // This will be composited with the original image's blurred version
-            // We return a placeholder; the caller should use the blurred original
-            return CIImage(color: .black).cropped(to: size)
+        case .blurred(let radius):
+            guard let original = originalImage else {
+                return CIImage(color: .black).cropped(to: size)
+            }
+            let blur = CIFilter.gaussianBlur()
+            blur.inputImage = original
+            blur.radius = Float(radius)
+            return blur.outputImage?
+                .clamped(to: original.extent)
+                .cropped(to: size)
+                ?? CIImage(color: .black).cropped(to: size)
 
         case .transparent:
             return CIImage(color: .clear).cropped(to: size)
