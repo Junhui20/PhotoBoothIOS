@@ -1,9 +1,9 @@
 import SwiftUI
 
-/// Share/complete screen with sharing options.
+/// Share screen with functional Save, Print, QR Code, and AirDrop buttons.
 ///
-/// Print is functional (Task 05). Email, QR, AirDrop are placeholders for Task 06.
-/// Supports auto-print in kiosk mode (prints automatically and advances).
+/// Processes photos on appear (filter + background removal), then serves them
+/// via a local WiFi server for QR code download and AirDrop sharing.
 struct ShareView: View {
 
     let photos: [CapturedPhoto]
@@ -12,103 +12,79 @@ struct ShareView: View {
     let onDone: () -> Void
 
     @EnvironmentObject var printService: PrintService
+    @EnvironmentObject var wifiServer: WiFiShareServer
+
+    // MARK: - State
 
     @State private var saved = false
     @State private var showPrintPreview = false
-    @State private var processedImages: [UIImage] = []
     @State private var isProcessing = false
     @State private var isAutoPrinting = false
+
+    // Full-res for printing
+    @State private var processedImages: [UIImage] = []
+    // 1920px share-optimized for AirDrop and QR
+    @State private var shareImages: [UIImage] = []
+
+    // AirDrop
+    @State private var showAirDrop = false
+    @State private var airDropShared = false
+    @State private var airDropButtonRect: CGRect = .zero
+
+    // QR
+    @State private var showQROverlay = false
+
+    // MARK: - Body
 
     var body: some View {
         ZStack {
             Color.black.opacity(0.85)
                 .ignoresSafeArea()
 
-            VStack(spacing: 32) {
-                // Header
-                Text("Share Your Photo")
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
-                    .foregroundColor(.white)
-
-                // Photo thumbnail (shows processed version if available)
-                if let image = processedImages.last ?? photos.last?.uiImage {
-                    Image(uiImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(maxHeight: 300)
-                        .cornerRadius(12)
-                        .shadow(radius: 20)
-                }
-
-                // Sharing buttons
-                VStack(spacing: 16) {
-                    // Save to Photos
-                    Button(action: saveToPhotos) {
-                        Label(
-                            saved ? "Saved!" : "Save to Photos",
-                            systemImage: saved ? "checkmark.circle.fill" : "square.and.arrow.down"
-                        )
-                        .font(.title3.weight(.semibold))
-                        .foregroundColor(.white)
-                        .frame(maxWidth: 300)
-                        .padding(.vertical, 16)
-                        .background(saved ? Color.green : Color.blue)
-                        .cornerRadius(16)
-                    }
-                    .disabled(saved)
-
-                    // Action buttons row
-                    HStack(spacing: 20) {
-                        // Print — functional
-                        Button(action: { showPrintPreview = true }) {
-                            VStack(spacing: 8) {
-                                Image(systemName: "printer.fill")
-                                    .font(.title2)
-                                    .foregroundColor(.white)
-                                    .frame(width: 56, height: 56)
-                                    .background(Color.blue.opacity(0.3))
-                                    .clipShape(Circle())
-                                Text("Print")
-                                    .font(.caption)
-                                    .foregroundColor(.white.opacity(0.9))
-                            }
-                        }
-
-                        // Placeholders — not implemented yet (Task 06)
-                        shareOptionPlaceholder(icon: "envelope.fill", label: "Email")
-                        shareOptionPlaceholder(icon: "qrcode", label: "QR Code")
-                        shareOptionPlaceholder(icon: "square.and.arrow.up", label: "AirDrop")
-                    }
-                }
-
-                // Done button
-                Button(action: {
-                    HapticManager.light()
-                    onDone()
-                }) {
-                    Text("Done")
-                        .font(.title3.weight(.semibold))
-                        .foregroundColor(.white)
-                        .frame(maxWidth: 200)
-                        .padding(.vertical, 14)
-                        .background(Color.white.opacity(0.15))
-                        .cornerRadius(16)
-                }
+            VStack(spacing: 28) {
+                header
+                photoThumbnail
+                shareContent
+                doneButton
             }
             .padding(32)
 
             // Auto-print overlay
             if isAutoPrinting {
-                Color.black.opacity(0.7)
-                    .ignoresSafeArea()
-                VStack(spacing: 16) {
-                    ProgressView()
-                        .tint(.white)
-                        .scaleEffect(1.5)
-                    Text("Printing...")
-                        .font(.title2.weight(.semibold))
-                        .foregroundColor(.white)
-                }
+                autoPrintOverlay
+            }
+
+            // QR overlay — fullscreen, tap to dismiss
+            if showQROverlay {
+                QRShareOverlayView(
+                    shareURL: wifiServer.shareURL,
+                    serverState: wifiServer.state,
+                    onClose: {
+                        HapticManager.light()
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            showQROverlay = false
+                        }
+                    }
+                )
+                .transition(.opacity)
+                .zIndex(10)
+            }
+
+            // AirDrop presenter — zero-size, anchored to button rect
+            if showAirDrop {
+                AirDropActivityView(
+                    images: shareImages.isEmpty ? processedImages : shareImages,
+                    sourceRect: airDropButtonRect,
+                    onComplete: { completed in
+                        showAirDrop = false
+                        if completed {
+                            HapticManager.success()
+                            airDropShared = true
+                        }
+                    }
+                )
+                .frame(width: 0, height: 0)
+                .allowsHitTesting(false)
             }
         }
         .sheet(isPresented: $showPrintPreview) {
@@ -125,6 +101,155 @@ struct ShareView: View {
         }
     }
 
+    // MARK: - Header
+
+    private var header: some View {
+        Text("Share Your Photo")
+            .font(.system(size: 32, weight: .bold, design: .rounded))
+            .foregroundColor(.white)
+    }
+
+    // MARK: - Photo Thumbnail
+
+    @ViewBuilder
+    private var photoThumbnail: some View {
+        let displayImage = shareImages.last ?? processedImages.last ?? photos.last?.uiImage
+        if let image = displayImage {
+            Image(uiImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(maxHeight: 280)
+                .cornerRadius(12)
+                .shadow(radius: 20)
+        }
+    }
+
+    // MARK: - Share Content
+
+    @ViewBuilder
+    private var shareContent: some View {
+        if isProcessing && processedImages.isEmpty {
+            VStack(spacing: 12) {
+                ProgressView()
+                    .tint(.white)
+                    .scaleEffect(1.5)
+                Text("Preparing your photo...")
+                    .font(.subheadline)
+                    .foregroundColor(.white.opacity(0.6))
+            }
+            .frame(minHeight: 160)
+        } else {
+            VStack(spacing: 16) {
+                // Save to Photos — full-width primary button
+                saveToPhotosButton
+
+                // Three action buttons
+                HStack(spacing: 16) {
+                    printButton
+                    qrCodeButton
+                    airDropButton
+                }
+            }
+        }
+    }
+
+    // MARK: - Buttons
+
+    private var saveToPhotosButton: some View {
+        Button(action: saveToPhotos) {
+            Label(
+                saved ? "Saved to Photos!" : "Save to Photos",
+                systemImage: saved ? "checkmark.circle.fill" : "square.and.arrow.down"
+            )
+            .font(.title3.weight(.semibold))
+            .foregroundColor(.white)
+            .frame(maxWidth: 360)
+            .padding(.vertical, 16)
+            .background(saved ? Color.green : Color.blue)
+            .cornerRadius(16)
+        }
+        .disabled(saved)
+    }
+
+    private var printButton: some View {
+        ShareActionButton(
+            icon: "printer.fill",
+            label: "Print",
+            color: .blue,
+            isActive: false
+        ) {
+            HapticManager.light()
+            showPrintPreview = true
+        }
+    }
+
+    private var qrCodeButton: some View {
+        ShareActionButton(
+            icon: "qrcode",
+            label: "QR Code",
+            color: .purple,
+            isActive: showQROverlay
+        ) {
+            HapticManager.light()
+            withAnimation(.easeIn(duration: 0.2)) {
+                showQROverlay = true
+            }
+        }
+        .disabled(wifiServer.state == .idle)
+    }
+
+    private var airDropButton: some View {
+        ShareActionButton(
+            icon: airDropShared ? "checkmark.circle.fill" : "square.and.arrow.up",
+            label: airDropShared ? "Shared!" : "AirDrop",
+            color: airDropShared ? .green : .cyan,
+            isActive: showAirDrop
+        ) {
+            guard !shareImages.isEmpty || !processedImages.isEmpty else { return }
+            HapticManager.light()
+            showAirDrop = true
+        }
+        .background(
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear { airDropButtonRect = geo.frame(in: .global) }
+                    .onChange(of: geo.size) { _ in
+                        airDropButtonRect = geo.frame(in: .global)
+                    }
+            }
+        )
+    }
+
+    private var doneButton: some View {
+        Button(action: {
+            HapticManager.light()
+            wifiServer.stop()
+            onDone()
+        }) {
+            Text("Done")
+                .font(.title3.weight(.semibold))
+                .foregroundColor(.white)
+                .frame(maxWidth: 200)
+                .padding(.vertical, 14)
+                .background(Color.white.opacity(0.15))
+                .cornerRadius(16)
+        }
+    }
+
+    // MARK: - Auto-Print Overlay
+
+    private var autoPrintOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.7).ignoresSafeArea()
+            VStack(spacing: 16) {
+                ProgressView().tint(.white).scaleEffect(1.5)
+                Text("Printing...")
+                    .font(.title2.weight(.semibold))
+                    .foregroundColor(.white)
+            }
+        }
+    }
+
     // MARK: - Text Values
 
     private var defaultTextValues: [String: String] {
@@ -136,7 +261,7 @@ struct ShareView: View {
         ]
     }
 
-    // MARK: - Actions
+    // MARK: - Photo Processing
 
     private func processPhotos() {
         let isNatural = (selectedFilter.id == "natural")
@@ -144,7 +269,11 @@ struct ShareView: View {
 
         // Nothing to process — use originals
         if isNatural && isOriginalBg {
-            processedImages = photos.compactMap(\.uiImage)
+            let originals = photos.compactMap(\.uiImage)
+            processedImages = originals
+            let pipeline = ProcessingPipeline()
+            shareImages = originals.map { pipeline.resizeForSharing($0, maxDimension: 1920) }
+            startWiFiServer()
             return
         }
 
@@ -156,20 +285,62 @@ struct ShareView: View {
 
         Task {
             let pipeline = ProcessingPipeline()
-            var results: [UIImage] = []
+            var fullRes: [UIImage] = []
+            var shares: [UIImage] = []
+
             for photo in photosCopy {
                 if let output = try? await pipeline.process(
                     photo: photo,
                     filter: filter,
                     background: needsBg ? bgType : nil
                 ) {
-                    results.append(output.displayImage)
+                    fullRes.append(output.displayImage)
+                    shares.append(output.shareImage)
                 } else if let fallback = pipeline.applyFilterOnly(to: photo, filter: filter) {
-                    results.append(fallback)
+                    fullRes.append(fallback)
+                    shares.append(pipeline.resizeForSharing(fallback, maxDimension: 1920))
                 }
             }
-            processedImages = results
+
+            processedImages = fullRes
+            shareImages = shares
             isProcessing = false
+            startWiFiServer()
+        }
+    }
+
+    // MARK: - WiFi Server
+
+    private func startWiFiServer() {
+        let images = shareImages.isEmpty ? processedImages : shareImages
+        guard !images.isEmpty else { return }
+
+        let sessionID = UUID().uuidString
+        var jpegDataArray: [Data] = []
+        for image in images {
+            if let jpeg = image.jpegData(compressionQuality: 0.88) {
+                jpegDataArray.append(jpeg)
+            }
+        }
+        guard !jpegDataArray.isEmpty else { return }
+
+        wifiServer.start(
+            photos: jpegDataArray,
+            sessionID: sessionID,
+            eventName: "PhotoBooth Pro",
+            hashtag: nil
+        )
+    }
+
+    // MARK: - Actions
+
+    private func saveToPhotos() {
+        let images = processedImages.isEmpty ? photos.compactMap(\.uiImage) : processedImages
+        PhotoLibraryHelper.saveMultipleToPhotos(images) { success in
+            if success {
+                HapticManager.success()
+                saved = true
+            }
         }
     }
 
@@ -191,12 +362,10 @@ struct ShareView: View {
                 return
             }
 
-            // Find best template for current photos
             let template = PrintTemplates.all
                 .first(where: { $0.requiredPhotoCount <= images.count })
                 ?? PrintTemplates.photoCard
 
-            // Render at 300 DPI on background thread
             let renderResult = await Task.detached(priority: .userInitiated) {
                 PrintLayoutRenderer.shared.render(
                     layout: template,
@@ -220,6 +389,7 @@ struct ShareView: View {
                 if case .success(true) = result {
                     HapticManager.success()
                     try? await Task.sleep(for: .seconds(1.5))
+                    wifiServer.stop()
                     onDone()
                 }
 
@@ -228,31 +398,37 @@ struct ShareView: View {
             }
         }
     }
+}
 
-    private func saveToPhotos() {
-        let images = processedImages.isEmpty ? photos.compactMap(\.uiImage) : processedImages
-        PhotoLibraryHelper.saveMultipleToPhotos(images) { success in
-            if success {
-                HapticManager.success()
-                saved = true
+// MARK: - Share Action Button
+
+/// Reusable icon + label button for the share action grid.
+private struct ShareActionButton: View {
+    let icon: String
+    let label: String
+    let color: Color
+    let isActive: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 26, weight: .medium))
+                    .foregroundColor(.white)
+                    .frame(width: 64, height: 64)
+                    .background(isActive ? color : color.opacity(0.25))
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16)
+                            .stroke(color.opacity(isActive ? 1.0 : 0.4), lineWidth: 1.5)
+                    )
+
+                Text(label)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundColor(.white.opacity(0.9))
             }
         }
-    }
-
-    // MARK: - Placeholder Button
-
-    private func shareOptionPlaceholder(icon: String, label: String) -> some View {
-        VStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.title2)
-                .foregroundColor(.white)
-                .frame(width: 56, height: 56)
-                .background(Color.white.opacity(0.1))
-                .clipShape(Circle())
-            Text(label)
-                .font(.caption)
-                .foregroundColor(.white.opacity(0.7))
-        }
-        .opacity(0.4)
+        .frame(maxWidth: .infinity)
     }
 }

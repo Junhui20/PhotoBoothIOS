@@ -107,7 +107,7 @@ final class ProcessingPipeline {
         return false
     }
 
-    private func resizeForSharing(_ image: UIImage, maxDimension: CGFloat) -> UIImage {
+    func resizeForSharing(_ image: UIImage, maxDimension: CGFloat) -> UIImage {
         let size = image.size
         let maxSide = max(size.width, size.height)
 

@@ -14,12 +14,15 @@ struct PhotoBoothIOSApp: App {
     @StateObject private var cameraManager = CameraManager()
     // Single PrintService instance — shared across settings, share, and print views
     @StateObject private var printService = PrintService()
+    // WiFi sharing server — serves photos to guests' phones via QR code
+    @StateObject private var wifiShareServer = WiFiShareServer()
 
     var body: some Scene {
         WindowGroup {
             SessionRootView(cameraManager: cameraManager)
                 .environmentObject(cameraManager)
                 .environmentObject(printService)
+                .environmentObject(wifiShareServer)
                 .preferredColorScheme(.dark)
                 .statusBarHidden(true)
                 .onAppear { printService.restoreDefaults() }

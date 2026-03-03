@@ -272,6 +272,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "PhotoBooth Pro needs camera access to connect to your Canon camera.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "PhotoBooth Pro uses your local WiFi network to let guests download their photos by scanning a QR code.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "PhotoBooth Pro saves captured photos to your photo library.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -311,6 +312,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "PhotoBooth Pro needs camera access to connect to your Canon camera.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "PhotoBooth Pro uses your local WiFi network to let guests download their photos by scanning a QR code.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "PhotoBooth Pro saves captured photos to your photo library.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
