@@ -6,10 +6,14 @@ import SwiftUI
 struct ShareView: View {
 
     let photos: [CapturedPhoto]
+    let selectedFilter: PhotoFilter
+    let selectedBackground: BackgroundOption
     let onDone: () -> Void
 
     @State private var saved = false
     @State private var showPrintPreview = false
+    @State private var processedImages: [UIImage] = []
+    @State private var isProcessing = false
     @StateObject private var printService = PrintService()
 
     var body: some View {
@@ -23,8 +27,8 @@ struct ShareView: View {
                     .font(.system(size: 32, weight: .bold, design: .rounded))
                     .foregroundColor(.white)
 
-                // Photo thumbnail
-                if let photo = photos.last, let image = photo.uiImage {
+                // Photo thumbnail (shows processed version if available)
+                if let image = processedImages.last ?? photos.last?.uiImage {
                     Image(uiImage: image)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
@@ -92,11 +96,12 @@ struct ShareView: View {
         }
         .sheet(isPresented: $showPrintPreview) {
             PrintPreviewView(
-                photos: photos.compactMap(\.uiImage),
+                photos: processedImages.isEmpty ? photos.compactMap(\.uiImage) : processedImages,
                 textValues: defaultTextValues,
                 printService: printService
             )
         }
+        .onAppear { processPhotos() }
     }
 
     // MARK: - Text Values
@@ -112,8 +117,43 @@ struct ShareView: View {
 
     // MARK: - Actions
 
+    private func processPhotos() {
+        let isNatural = (selectedFilter.id == "natural")
+        let isOriginalBg = selectedBackground.isOriginal
+
+        // Nothing to process — use originals
+        if isNatural && isOriginalBg {
+            processedImages = photos.compactMap(\.uiImage)
+            return
+        }
+
+        isProcessing = true
+        let photosCopy = photos
+        let filter = selectedFilter
+        let bgType = selectedBackground.type
+        let needsBg = !isOriginalBg
+
+        Task {
+            let pipeline = ProcessingPipeline()
+            var results: [UIImage] = []
+            for photo in photosCopy {
+                if let output = try? await pipeline.process(
+                    photo: photo,
+                    filter: filter,
+                    background: needsBg ? bgType : nil
+                ) {
+                    results.append(output.displayImage)
+                } else if let fallback = pipeline.applyFilterOnly(to: photo, filter: filter) {
+                    results.append(fallback)
+                }
+            }
+            processedImages = results
+            isProcessing = false
+        }
+    }
+
     private func saveToPhotos() {
-        let images = photos.compactMap(\.uiImage)
+        let images = processedImages.isEmpty ? photos.compactMap(\.uiImage) : processedImages
         PhotoLibraryHelper.saveMultipleToPhotos(images) { success in
             if success {
                 HapticManager.success()

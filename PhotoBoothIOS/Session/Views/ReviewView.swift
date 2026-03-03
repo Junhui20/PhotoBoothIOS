@@ -2,17 +2,19 @@ import SwiftUI
 
 /// Shows captured photo(s) for approval with accept/retake buttons.
 ///
-/// Includes a filter picker, auto-advance timer bar, and layout support.
+/// Includes a filter picker, background picker, auto-advance timer bar, and layout support.
 struct ReviewView: View {
 
     let photos: [CapturedPhoto]
     let onRetake: () -> Void
-    let onAccept: (PhotoFilter) -> Void
+    let onAccept: (PhotoFilter, BackgroundOption) -> Void
     let config: SessionConfig
 
     @State private var timerProgress: CGFloat = 0.0
     @State private var selectedFilter: PhotoFilter = .natural
+    @State private var selectedBackground: BackgroundOption = BackgroundOption.allOptions[0]
     @State private var filteredImage: UIImage?
+    @State private var processedImage: UIImage?
 
     var body: some View {
         ZStack {
@@ -35,6 +37,12 @@ struct ReviewView: View {
                     selectedFilter: $selectedFilter
                 )
 
+                // Background picker
+                BackgroundPickerView(
+                    sourceImage: photos.last?.uiImage,
+                    selectedBackground: $selectedBackground
+                )
+
                 // Action buttons
                 HStack(spacing: 24) {
                     if config.allowRetake {
@@ -54,7 +62,7 @@ struct ReviewView: View {
 
                     Button(action: {
                         HapticManager.success()
-                        onAccept(selectedFilter)
+                        onAccept(selectedFilter, selectedBackground)
                     }) {
                         Label("Love it!", systemImage: "heart.fill")
                             .font(.title3.weight(.bold))
@@ -89,7 +97,10 @@ struct ReviewView: View {
             }
         }
         .onChange(of: selectedFilter) { newFilter in
-            applyFilterPreview(newFilter)
+            applyPreview(filter: newFilter, background: selectedBackground)
+        }
+        .onChange(of: selectedBackground) { newBg in
+            applyPreview(filter: selectedFilter, background: newBg)
         }
     }
 
@@ -123,7 +134,7 @@ struct ReviewView: View {
 
     @ViewBuilder
     private var singlePhotoView: some View {
-        if let displayImage = filteredImage ?? photos.last?.uiImage {
+        if let displayImage = processedImage ?? filteredImage ?? photos.last?.uiImage {
             Image(uiImage: displayImage)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
@@ -145,21 +156,51 @@ struct ReviewView: View {
         }
     }
 
-    // MARK: - Filter Preview
+    // MARK: - Preview Generation
 
-    private func applyFilterPreview(_ filter: PhotoFilter) {
+    private func applyPreview(filter: PhotoFilter, background: BackgroundOption) {
         guard let photo = photos.last else { return }
 
-        if filter.id == "natural" {
+        let isNaturalFilter = (filter.id == "natural")
+        let isOriginalBg = background.isOriginal
+
+        // No processing needed — show original
+        if isNaturalFilter && isOriginalBg {
             filteredImage = nil
+            processedImage = nil
             return
         }
 
         let sourceImage = photo.uiImage ?? UIImage()
+        let bgType = background.type
+
         Task.detached(priority: .userInitiated) {
-            let result = FilterEngine.shared.applyFilter(filter, to: sourceImage)
+            var result = sourceImage
+
+            // Step 1: Apply filter
+            if !isNaturalFilter {
+                result = FilterEngine.shared.applyFilter(filter, to: result)
+            }
+
+            // Step 2: Apply background removal
+            if !isOriginalBg {
+                let removal = BackgroundRemoval()
+                if let processed = try? await removal.removeBackground(
+                    from: result,
+                    replacement: bgType,
+                    quality: .fast
+                ) {
+                    result = processed
+                }
+            }
+
             await MainActor.run {
-                filteredImage = result
+                if isOriginalBg {
+                    filteredImage = isNaturalFilter ? nil : result
+                    processedImage = nil
+                } else {
+                    processedImage = result
+                }
             }
         }
     }

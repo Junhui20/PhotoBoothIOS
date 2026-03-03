@@ -55,7 +55,9 @@ struct SessionContainerView: View {
                     ReviewView(
                         photos: sessionVM.capturedPhotos,
                         onRetake: { sessionVM.retakePhoto() },
-                        onAccept: { filter in sessionVM.acceptPhotos(filter: filter) },
+                        onAccept: { filter, background in
+                            sessionVM.acceptPhotos(filter: filter, background: background)
+                        },
                         config: sessionVM.config
                     )
                     .transition(.move(edge: .trailing))
@@ -63,6 +65,8 @@ struct SessionContainerView: View {
                 case .sharing:
                     ShareView(
                         photos: sessionVM.capturedPhotos,
+                        selectedFilter: sessionVM.selectedFilter,
+                        selectedBackground: sessionVM.selectedBackground,
                         onDone: { sessionVM.completeSession() }
                     )
                     .transition(.move(edge: .trailing))

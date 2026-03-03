@@ -5,7 +5,10 @@ import Vision
 // MARK: - Background Type
 
 /// The replacement background after person segmentation.
-enum BackgroundType {
+///
+/// Marked `@unchecked Sendable` because associated UIColor/UIImage values
+/// are created once and never mutated after initialization.
+enum BackgroundType: @unchecked Sendable {
     case original                       // No background removal
     case solidColor(UIColor)            // Solid color
     case gradient(UIColor, UIColor)     // Vertical gradient
@@ -20,11 +23,12 @@ enum BackgroundType {
 ///
 /// Uses `VNGeneratePersonSegmentationRequest` (iOS 15+).
 /// Quality levels: `.fast` for preview, `.accurate` for final output.
-final class BackgroundRemoval {
+/// Thread-safe — all methods are nonisolated for background rendering.
+final class BackgroundRemoval: @unchecked Sendable {
 
-    private let ciContext: CIContext
+    nonisolated private let ciContext: CIContext
 
-    init(ciContext: CIContext? = nil) {
+    nonisolated init(ciContext: CIContext? = nil) {
         self.ciContext = ciContext ?? FilterEngine.shared.ciContext
     }
 
@@ -34,7 +38,7 @@ final class BackgroundRemoval {
     ///   - image: The input photo as CIImage
     ///   - quality: Segmentation quality (.fast for preview, .accurate for final)
     /// - Returns: A grayscale mask CIImage (white = person, black = background)
-    func generateMask(
+    nonisolated func generateMask(
         from image: CIImage,
         quality: VNGeneratePersonSegmentationRequest.QualityLevel = .balanced
     ) async throws -> CIImage {
@@ -75,7 +79,7 @@ final class BackgroundRemoval {
     ///   - replacement: What to replace the background with
     ///   - quality: Segmentation quality
     /// - Returns: The composited result with new background
-    func removeBackground(
+    nonisolated func removeBackground(
         from image: CIImage,
         replacement: BackgroundType,
         quality: VNGeneratePersonSegmentationRequest.QualityLevel = .accurate
@@ -102,7 +106,7 @@ final class BackgroundRemoval {
     }
 
     /// Remove background and return a UIImage.
-    func removeBackground(
+    nonisolated func removeBackground(
         from photo: UIImage,
         replacement: BackgroundType,
         quality: VNGeneratePersonSegmentationRequest.QualityLevel = .accurate
@@ -122,7 +126,7 @@ final class BackgroundRemoval {
 
     // MARK: - Private
 
-    private func createBackground(for type: BackgroundType, size: CGRect) -> CIImage {
+    nonisolated private func createBackground(for type: BackgroundType, size: CGRect) -> CIImage {
         switch type {
         case .original:
             return CIImage(color: .clear).cropped(to: size)

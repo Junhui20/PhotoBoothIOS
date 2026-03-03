@@ -13,6 +13,7 @@ final class SessionViewModel: ObservableObject {
     @Published var currentPhotoIndex: Int = 0
     @Published var retakeCount: Int = 0
     @Published var selectedFilter: PhotoFilter = .natural
+    @Published var selectedBackground: BackgroundOption = BackgroundOption.allOptions[0]
     @Published var config = SessionConfig()
 
     let cameraManager: CameraManager
@@ -81,19 +82,38 @@ final class SessionViewModel: ObservableObject {
         }
     }
 
-    /// Accept captured photos with selected filter: review → sharing.
-    func acceptPhotos(filter: PhotoFilter = .natural) {
+    /// Accept captured photos with selected filter and background: review → sharing.
+    func acceptPhotos(
+        filter: PhotoFilter = .natural,
+        background: BackgroundOption = BackgroundOption.allOptions[0]
+    ) {
         guard phase == .review else { return }
 
         stopAutoReturnTimer()
         selectedFilter = filter
+        selectedBackground = background
         HapticManager.success()
 
-        // Auto-save to photos library if enabled (apply filter before saving)
+        // Auto-save to photos library if enabled (apply filter + background before saving)
         if config.autoSaveToPhotos {
-            let pipeline = ProcessingPipeline()
-            let images = capturedPhotos.compactMap { pipeline.applyFilterOnly(to: $0, filter: filter) }
-            PhotoLibraryHelper.saveMultipleToPhotos(images)
+            let photosCopy = capturedPhotos
+            let bgType = background.type
+            Task {
+                let pipeline = ProcessingPipeline()
+                var images: [UIImage] = []
+                for photo in photosCopy {
+                    if let output = try? await pipeline.process(
+                        photo: photo,
+                        filter: filter,
+                        background: background.isOriginal ? nil : bgType
+                    ) {
+                        images.append(output.displayImage)
+                    } else if let fallback = pipeline.applyFilterOnly(to: photo, filter: filter) {
+                        images.append(fallback)
+                    }
+                }
+                PhotoLibraryHelper.saveMultipleToPhotos(images)
+            }
         }
 
         withAnimation(.easeInOut(duration: 0.4)) {
