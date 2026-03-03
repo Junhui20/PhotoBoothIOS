@@ -2,14 +2,15 @@ import SwiftUI
 
 /// Share/complete screen with sharing options.
 ///
-/// Placeholder for Task 06 — currently just "Save to Photos" and "Done" buttons.
-/// Future: Print, Email, Text, QR Code, AirDrop.
+/// Print is functional (Task 05). Email, QR, AirDrop are placeholders for Task 06.
 struct ShareView: View {
 
     let photos: [CapturedPhoto]
     let onDone: () -> Void
 
     @State private var saved = false
+    @State private var showPrintPreview = false
+    @StateObject private var printService = PrintService()
 
     var body: some View {
         ZStack {
@@ -34,7 +35,7 @@ struct ShareView: View {
 
                 // Sharing buttons
                 VStack(spacing: 16) {
-                    // Save to Photos (works now)
+                    // Save to Photos
                     Button(action: saveToPhotos) {
                         Label(
                             saved ? "Saved!" : "Save to Photos",
@@ -49,14 +50,28 @@ struct ShareView: View {
                     }
                     .disabled(saved)
 
-                    // Future sharing options (placeholder)
+                    // Action buttons row
                     HStack(spacing: 20) {
-                        shareOptionButton(icon: "printer.fill", label: "Print")
-                        shareOptionButton(icon: "envelope.fill", label: "Email")
-                        shareOptionButton(icon: "qrcode", label: "QR Code")
-                        shareOptionButton(icon: "square.and.arrow.up", label: "AirDrop")
+                        // Print — functional
+                        Button(action: { showPrintPreview = true }) {
+                            VStack(spacing: 8) {
+                                Image(systemName: "printer.fill")
+                                    .font(.title2)
+                                    .foregroundColor(.white)
+                                    .frame(width: 56, height: 56)
+                                    .background(Color.blue.opacity(0.3))
+                                    .clipShape(Circle())
+                                Text("Print")
+                                    .font(.caption)
+                                    .foregroundColor(.white.opacity(0.9))
+                            }
+                        }
+
+                        // Placeholders — not implemented yet (Task 06)
+                        shareOptionPlaceholder(icon: "envelope.fill", label: "Email")
+                        shareOptionPlaceholder(icon: "qrcode", label: "QR Code")
+                        shareOptionPlaceholder(icon: "square.and.arrow.up", label: "AirDrop")
                     }
-                    .opacity(0.4) // Grayed out — not implemented yet
                 }
 
                 // Done button
@@ -75,7 +90,27 @@ struct ShareView: View {
             }
             .padding(32)
         }
+        .sheet(isPresented: $showPrintPreview) {
+            PrintPreviewView(
+                photos: photos.compactMap(\.uiImage),
+                textValues: defaultTextValues,
+                printService: printService
+            )
+        }
     }
+
+    // MARK: - Text Values
+
+    private var defaultTextValues: [String: String] {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .long
+        return [
+            "eventName": "PhotoBooth Pro",
+            "date": formatter.string(from: Date()),
+        ]
+    }
+
+    // MARK: - Actions
 
     private func saveToPhotos() {
         let images = photos.compactMap(\.uiImage)
@@ -87,7 +122,9 @@ struct ShareView: View {
         }
     }
 
-    private func shareOptionButton(icon: String, label: String) -> some View {
+    // MARK: - Placeholder Button
+
+    private func shareOptionPlaceholder(icon: String, label: String) -> some View {
         VStack(spacing: 8) {
             Image(systemName: icon)
                 .font(.title2)
@@ -99,5 +136,6 @@ struct ShareView: View {
                 .font(.caption)
                 .foregroundColor(.white.opacity(0.7))
         }
+        .opacity(0.4)
     }
 }
