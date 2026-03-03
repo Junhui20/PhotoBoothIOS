@@ -19,9 +19,6 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var isCapturing: Bool = false
     @Published var isLiveViewActive: Bool = false
     @Published var cameraSettings = CameraSettings()
-    /// Instant preview: last live view frame captured right before shutter fires.
-    /// Shown immediately while full-res image downloads in background.
-    @Published var capturePreviewImage: UIImage?
 
     // MARK: - Private
 
@@ -105,7 +102,6 @@ final class CameraManager: NSObject, ObservableObject {
         cameraSettings = CameraSettings()
         liveViewImage = nil
         lastCapturedPhoto = nil
-        capturePreviewImage = nil
         lastHandledObjectHandle = 0
     }
 
@@ -284,7 +280,7 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
-    /// Stop live view streaming.
+    /// Stop live view streaming and restore EVF to camera LCD.
     func stopLiveView() {
         isLiveViewActive = false
         liveViewTask?.cancel()
@@ -304,6 +300,16 @@ final class CameraManager: NSObject, ObservableObject {
                 logger.info("EVF output restored to camera LCD — live view stopped")
             }
         }
+    }
+
+    /// Pause live view without sending EVF restore PTP command.
+    /// Used during capture to avoid wasting a PTP round trip.
+    /// EVF will be set again when live view restarts.
+    private func pauseLiveViewForCapture() {
+        isLiveViewActive = false
+        liveViewTask?.cancel()
+        liveViewTask = nil
+        logger.info("Live view paused for capture (EVF stays on USB)")
     }
 
     /// Internal live view polling loop.
@@ -413,7 +419,6 @@ final class CameraManager: NSObject, ObservableObject {
                            handle != lastHandledObjectHandle {
                             lastHandledObjectHandle = handle
                             logger.info("Camera-initiated capture detected — handle 0x\(String(handle, radix: 16))")
-                            capturePreviewImage = liveViewImage
                             isCapturing = true
                             do {
                                 let photo = try await downloadObject(handle: handle)
@@ -422,7 +427,6 @@ final class CameraManager: NSObject, ObservableObject {
                             } catch {
                                 logger.error("Background capture download failed: \(error.localizedDescription)")
                             }
-                            capturePreviewImage = nil
                             isCapturing = false
                         }
                     }
@@ -609,17 +613,48 @@ final class CameraManager: NSObject, ObservableObject {
         try await setCameraProperty(.exposureComp, value: ev.rawValue)
     }
 
+    // MARK: - Pre-Focus (for countdown capture)
+
+    /// Start autofocus without firing shutter (half-press).
+    /// Call when countdown begins so AF runs during countdown.
+    /// Live view continues running — the focus command is a single PTP command.
+    func startPreFocus() async {
+        guard connectionState.isReady, cameraDevice != nil else {
+            logger.warning("Cannot pre-focus — camera not connected")
+            return
+        }
+
+        do {
+            _ = try await sendPTPCommand(
+                opCode: CanonPTP.CanonOpCode.remoteReleaseOn.rawValue,
+                params: [CanonPTP.ReleaseParam.focus.rawValue, 0x00]
+            )
+            logger.info("Pre-focus: half-press sent, AF running during countdown")
+        } catch {
+            logger.warning("Pre-focus failed: \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - Photo Capture
 
-    /// Capture a photo: trigger shutter, wait for image, download it.
+    /// Capture a photo: release shutter, wait for image, download it.
     ///
-    /// Optimized flow:
-    ///   1. Save current live view frame as instant preview
-    ///   2. Stop live view (no extra wait)
-    ///   3. Fire shutter (AF → release)
-    ///   4. Resume live view immediately (parallel with download)
-    ///   5. Download full-res image (PTP events first, then IC framework)
-    func capturePhoto() async throws -> CapturedPhoto {
+    /// When `preFocused` is true, skips AF (half-press already sent by `startPreFocus()`).
+    /// Releases shutter immediately — no AF polling (AF ran during countdown).
+    ///
+    /// The `onShutterFired` callback fires the instant the shutter command succeeds,
+    /// BEFORE download begins. Use this to sync sound/haptics with the actual shutter.
+    ///
+    /// Flow:
+    ///   1. Pause live view (cancel task, skip EVF restore — saves PTP round trip)
+    ///   2. Release shutter (instant if pre-focused, full AF+release otherwise)
+    ///   3. onShutterFired callback (sound + haptic)
+    ///   4. Download full-res image
+    ///   5. Restart live view AFTER download completes (prevents PTP conflicts)
+    func capturePhoto(
+        preFocused: Bool = false,
+        onShutterFired: (() -> Void)? = nil
+    ) async throws -> CapturedPhoto {
         guard connectionState.isReady, cameraDevice != nil else {
             throw PhotoBoothError.cameraNotConnected
         }
@@ -627,30 +662,31 @@ final class CameraManager: NSObject, ObservableObject {
         isCapturing = true
         defer { isCapturing = false }
 
-        // Step 0: Save instant preview from live view
-        capturePreviewImage = liveViewImage
-
-        // Pause live view during shutter
+        // Pause live view — skip EVF restore to save PTP round trip
         let wasLiveViewActive = isLiveViewActive
         if wasLiveViewActive {
-            stopLiveView()
-            // No sleep needed — camera handles the transition
+            pauseLiveViewForCapture()
         }
 
         // Clear pending files so we detect only NEW files from this capture
         pendingCaptureFiles.removeAll()
 
-        logger.info("Starting capture sequence…")
+        logger.info("Starting capture sequence (preFocused=\(preFocused))…")
 
-        // Step 1: Fire the shutter
-        let shutterFired = await triggerShutter()
-
-        // Step 2: Resume live view immediately (parallel with download)
-        if wasLiveViewActive {
-            startLiveView()
+        // Fire the shutter
+        let shutterFired: Bool
+        if preFocused {
+            shutterFired = await releasePreFocusedShutter()
+        } else {
+            shutterFired = await triggerShutter()
         }
 
-        // Step 3: Download the captured image
+        // Notify caller the instant shutter fires (for sound/haptic sync)
+        if shutterFired {
+            onShutterFired?()
+        }
+
+        // Download the captured image
         let photo: CapturedPhoto
         if shutterFired {
             photo = try await downloadCapturedImage()
@@ -660,8 +696,12 @@ final class CameraManager: NSObject, ObservableObject {
         }
 
         lastCapturedPhoto = photo
-        capturePreviewImage = nil // Clear preview now that full-res is ready
         logger.info("Photo captured: \(photo.imageData.count) bytes, \(photo.width)×\(photo.height)")
+
+        // Restart live view AFTER download completes (prevents PTP command conflicts)
+        if wasLiveViewActive {
+            startLiveView()
+        }
 
         return photo
     }
@@ -749,6 +789,63 @@ final class CameraManager: NSObject, ObservableObject {
             return true
         } catch {
             logger.error("Immediate capture also failed: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    // MARK: - Pre-Focused Shutter Release
+
+    /// Release shutter after pre-focus. AF was started by `startPreFocus()` during countdown.
+    /// AF had the entire countdown duration (3s) to complete — no polling needed.
+    /// Just drains pending events once and fires release immediately.
+    private func releasePreFocusedShutter() async -> Bool {
+        // Single event drain — consume any pending AF result/property events
+        if let eventData = try? await sendPTPCommand(
+            opCode: CanonPTP.CanonOpCode.getEvent.rawValue
+        ), !eventData.isEmpty {
+            parsePropertyChangedEvents(from: eventData)
+            let afResult = checkAFResult(from: eventData)
+            logger.info("Pre-focus AF result: \(afResult == .focused ? "FOCUSED" : afResult == .failed ? "FAILED" : "PENDING") — releasing immediately")
+        }
+
+        // Release shutter (full press), with retry on DeviceBusy
+        for attempt in 1...5 {
+            do {
+                _ = try await sendPTPCommand(
+                    opCode: CanonPTP.CanonOpCode.remoteReleaseOn.rawValue,
+                    params: [CanonPTP.ReleaseParam.release.rawValue, 0x00]
+                )
+                logger.info("Pre-focused release succeeded on attempt \(attempt)")
+
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                _ = try? await sendPTPCommand(
+                    opCode: CanonPTP.CanonOpCode.remoteReleaseOff.rawValue,
+                    params: [0x03]
+                )
+                return true
+            } catch {
+                logger.warning("Pre-focused release attempt \(attempt)/5: \(error.localizedDescription)")
+                if attempt < 5 {
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                }
+            }
+        }
+
+        // All release attempts failed — try immediate as last resort
+        logger.warning("Pre-focused release failed, trying immediate capture…")
+        do {
+            _ = try await sendPTPCommand(
+                opCode: CanonPTP.CanonOpCode.remoteReleaseOn.rawValue,
+                params: [CanonPTP.ReleaseParam.immediate.rawValue, 0x00]
+            )
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            _ = try? await sendPTPCommand(
+                opCode: CanonPTP.CanonOpCode.remoteReleaseOff.rawValue,
+                params: [0x03]
+            )
+            return true
+        } catch {
+            logger.error("Pre-focused capture completely failed: \(error.localizedDescription)")
             return false
         }
     }
@@ -874,29 +971,6 @@ final class CameraManager: NSObject, ObservableObject {
             params: [0x00000000, 0x00000000]
         )
         try await Task.sleep(nanoseconds: 1_500_000_000)
-        return try await downloadLatestImage()
-    }
-
-    /// Poll GetEvent for ObjectAdded (0xC101) event, then download the new object.
-    private func waitForCaptureAndDownload() async throws -> CapturedPhoto {
-        let maxPolls = 30
-
-        for poll in 0..<maxPolls {
-            try await Task.sleep(nanoseconds: 200_000_000)
-
-            if let eventData = try? await sendPTPCommand(
-                opCode: CanonPTP.CanonOpCode.getEvent.rawValue
-            ), !eventData.isEmpty {
-                if let handle = parseObjectAddedEvent(from: eventData) {
-                    logger.info("ObjectAdded event: handle 0x\(String(handle, radix: 16))")
-                    return try await downloadObject(handle: handle)
-                }
-            }
-
-            logger.debug("GetEvent poll \(poll + 1)/\(maxPolls) — no ObjectAdded yet")
-        }
-
-        logger.warning("No ObjectAdded event — falling back to latest handle")
         return try await downloadLatestImage()
     }
 

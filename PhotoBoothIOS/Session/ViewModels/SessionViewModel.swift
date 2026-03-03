@@ -125,6 +125,7 @@ final class SessionViewModel: ObservableObject {
     // MARK: - Countdown
 
     /// Start the countdown timer: 3, 2, 1 → capture.
+    /// Starts autofocus immediately so camera is focused when countdown reaches 0.
     func beginCountdown() {
         let startValue = (currentPhotoIndex > 0) ? 2 : config.countdownSeconds
         countdownValue = startValue
@@ -139,6 +140,11 @@ final class SessionViewModel: ObservableObject {
             SoundManager.shared.playCountdownBeep()
         }
         HapticManager.medium()
+
+        // Start autofocus during countdown — camera focuses while timer runs
+        Task {
+            await cameraManager.startPreFocus()
+        }
 
         countdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -174,25 +180,31 @@ final class SessionViewModel: ObservableObject {
     // MARK: - Capture
 
     private func performCapture() {
+        // Show processing immediately — no delay before capture
         withAnimation(.easeIn(duration: 0.1)) {
-            phase = .capturing
+            phase = .processing
         }
-
-        if config.playShutterSound {
-            SoundManager.shared.playShutterClick()
-        }
-        HapticManager.heavy()
 
         Task {
-            // Brief flash hold
-            try? await Task.sleep(for: .milliseconds(300))
-
-            withAnimation(.easeInOut(duration: 0.3)) {
-                phase = .processing
-            }
-
             do {
-                let photo = try await cameraManager.capturePhoto()
+                let photo = try await cameraManager.capturePhoto(preFocused: true) { [weak self] in
+                    // Fires the INSTANT the camera shutter triggers — synced with real shutter
+                    guard let self else { return }
+                    if self.config.playShutterSound {
+                        SoundManager.shared.playShutterClick()
+                    }
+                    HapticManager.heavy()
+                    // Brief flash effect
+                    withAnimation(.easeIn(duration: 0.05)) {
+                        self.phase = .capturing
+                    }
+                    // Return to processing after flash
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                        withAnimation(.easeOut(duration: 0.1)) {
+                            self.phase = .processing
+                        }
+                    }
+                }
                 capturedPhotos.append(photo)
                 currentPhotoIndex = capturedPhotos.count
 
