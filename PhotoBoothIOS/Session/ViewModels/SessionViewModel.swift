@@ -17,11 +17,13 @@ final class SessionViewModel: ObservableObject {
     @Published var config = SessionConfig()
 
     let cameraManager: CameraManager
+    let galleryStore: GalleryStore
     private var countdownTimer: Timer?
     private var autoReturnTimer: Timer?
 
-    init(cameraManager: CameraManager) {
+    init(cameraManager: CameraManager, galleryStore: GalleryStore) {
         self.cameraManager = cameraManager
+        self.galleryStore = galleryStore
     }
 
     nonisolated deinit {
@@ -83,6 +85,8 @@ final class SessionViewModel: ObservableObject {
     }
 
     /// Accept captured photos with selected filter and background: review → sharing.
+    ///
+    /// Processes photos once and uses the results for both camera roll save and gallery storage.
     func acceptPhotos(
         filter: PhotoFilter = .natural,
         background: BackgroundOption = BackgroundOption.allOptions[0]
@@ -94,26 +98,44 @@ final class SessionViewModel: ObservableObject {
         selectedBackground = background
         HapticManager.success()
 
-        // Auto-save to photos library if enabled (apply filter + background before saving)
-        if config.autoSaveToPhotos {
-            let photosCopy = capturedPhotos
-            let bgType = background.type
-            Task {
-                let pipeline = ProcessingPipeline()
-                var images: [UIImage] = []
-                for photo in photosCopy {
-                    if let output = try? await pipeline.process(
-                        photo: photo,
-                        filter: filter,
-                        background: background.isOriginal ? nil : bgType
-                    ) {
-                        images.append(output.displayImage)
-                    } else if let fallback = pipeline.applyFilterOnly(to: photo, filter: filter) {
-                        images.append(fallback)
-                    }
+        // Process photos once — save to camera roll (if enabled) AND gallery
+        let photosCopy = capturedPhotos
+        let bgType = background.type
+        let saveToPhotos = config.autoSaveToPhotos
+        let store = galleryStore
+
+        Task {
+            let pipeline = ProcessingPipeline()
+            var displayImages: [UIImage] = []
+            var shareImages: [UIImage] = []
+
+            for photo in photosCopy {
+                if let output = try? await pipeline.process(
+                    photo: photo,
+                    filter: filter,
+                    background: background.isOriginal ? nil : bgType
+                ) {
+                    displayImages.append(output.displayImage)
+                    shareImages.append(output.shareImage)
+                } else if let fallback = pipeline.applyFilterOnly(to: photo, filter: filter) {
+                    displayImages.append(fallback)
+                    shareImages.append(pipeline.resizeForSharing(fallback, maxDimension: 1920))
                 }
-                PhotoLibraryHelper.saveMultipleToPhotos(images)
             }
+
+            // Save to camera roll if enabled
+            if saveToPhotos {
+                PhotoLibraryHelper.saveMultipleToPhotos(displayImages)
+            }
+
+            // Save to gallery storage
+            await store.saveSession(
+                photos: photosCopy,
+                processedImages: displayImages,
+                shareImages: shareImages,
+                filter: filter,
+                background: background
+            )
         }
 
         withAnimation(.easeInOut(duration: 0.4)) {

@@ -3,13 +3,15 @@ import SwiftUI
 /// Idle/attract screen shown when no session is active.
 ///
 /// Shows camera connection status and animated "Tap to Start" prompt.
-/// Gear icon in corner opens camera settings for operator setup.
+/// Gear icon in top-right opens camera settings for operator setup.
+/// Gallery icon in top-left opens saved photo gallery.
 struct AttractScreen: View {
 
     let isCameraReady: Bool
     let connectionText: String
     let onStart: () -> Void
     let onSettings: () -> Void
+    let onGallery: () -> Void
 
     @State private var pulseScale: CGFloat = 1.0
     @State private var glowOpacity: Double = 0.4
@@ -86,11 +88,21 @@ struct AttractScreen: View {
                 Spacer()
             }
 
-            // Settings gear button (top-right corner) — only when camera connected
-            if isCameraReady {
-                VStack {
-                    HStack {
-                        Spacer()
+            // Operator buttons (top corners)
+            VStack {
+                HStack {
+                    // Gallery button (top-left) — always visible
+                    Button(action: onGallery) {
+                        Image(systemName: "photo.on.rectangle.angled")
+                            .font(.title2)
+                            .foregroundColor(.white.opacity(0.5))
+                            .padding(16)
+                    }
+
+                    Spacer()
+
+                    // Settings gear button (top-right) — only when camera connected
+                    if isCameraReady {
                         Button(action: onSettings) {
                             Image(systemName: "gearshape.fill")
                                 .font(.title2)
@@ -98,8 +110,8 @@ struct AttractScreen: View {
                                 .padding(16)
                         }
                     }
-                    Spacer()
                 }
+                Spacer()
             }
         }
         .contentShape(Rectangle())

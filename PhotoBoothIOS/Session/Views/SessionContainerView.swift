@@ -9,6 +9,7 @@ struct SessionContainerView: View {
     @ObservedObject var sessionVM: SessionViewModel
     @EnvironmentObject var cameraManager: CameraManager
     @State private var showSettings = false
+    @State private var showGallery = false
     @State private var activeSetting: CameraSettingsPanel.SettingType?
     @State private var isManualMode: Bool = false
     @State private var settingsTab: SettingsTab = .camera
@@ -34,7 +35,8 @@ struct SessionContainerView: View {
                         isCameraReady: cameraManager.connectionState.isReady,
                         connectionText: cameraManager.connectionState.displayText,
                         onStart: { sessionVM.startSession() },
-                        onSettings: { showSettings = true }
+                        onSettings: { showSettings = true },
+                        onGallery: { showGallery = true }
                     )
                     .transition(.opacity)
 
@@ -112,6 +114,9 @@ struct SessionContainerView: View {
         }
         .sheet(isPresented: $showSettings) {
             settingsSheet
+        }
+        .sheet(isPresented: $showGallery) {
+            GalleryView()
         }
     }
 

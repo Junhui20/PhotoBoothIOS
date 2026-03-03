@@ -16,16 +16,22 @@ struct PhotoBoothIOSApp: App {
     @StateObject private var printService = PrintService()
     // WiFi sharing server — serves photos to guests' phones via QR code
     @StateObject private var wifiShareServer = WiFiShareServer()
+    // Gallery storage — persists sessions to disk for browsing and re-sharing
+    @StateObject private var galleryStore = GalleryStore()
 
     var body: some Scene {
         WindowGroup {
-            SessionRootView(cameraManager: cameraManager)
+            SessionRootView(cameraManager: cameraManager, galleryStore: galleryStore)
                 .environmentObject(cameraManager)
                 .environmentObject(printService)
                 .environmentObject(wifiShareServer)
+                .environmentObject(galleryStore)
                 .preferredColorScheme(.dark)
                 .statusBarHidden(true)
-                .onAppear { printService.restoreDefaults() }
+                .onAppear {
+                    printService.restoreDefaults()
+                    galleryStore.loadSessions()
+                }
         }
     }
 }
@@ -36,8 +42,11 @@ struct PhotoBoothIOSApp: App {
 struct SessionRootView: View {
     @StateObject private var sessionVM: SessionViewModel
 
-    init(cameraManager: CameraManager) {
-        _sessionVM = StateObject(wrappedValue: SessionViewModel(cameraManager: cameraManager))
+    init(cameraManager: CameraManager, galleryStore: GalleryStore) {
+        _sessionVM = StateObject(wrappedValue: SessionViewModel(
+            cameraManager: cameraManager,
+            galleryStore: galleryStore
+        ))
     }
 
     var body: some View {
