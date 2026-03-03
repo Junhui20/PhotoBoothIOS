@@ -176,7 +176,7 @@ struct ProfileEditorView: View {
 
     private var accentColorBinding: Binding<Color> {
         Binding(
-            get: { Color(UIColor(hex: draft.branding.accentColorHex) ?? .pink) },
+            get: { Color(UIColor(hex: draft.branding.accentColorHex) ?? .systemPink) },
             set: { newColor in
                 draft.branding.accentColorHex = UIColor(newColor).hexString
             }

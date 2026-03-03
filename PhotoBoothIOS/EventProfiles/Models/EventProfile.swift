@@ -42,7 +42,7 @@ struct EventProfile: Identifiable, Codable, Equatable, Sendable {
 
 // MARK: - Default Profiles
 
-extension EventProfile {
+nonisolated extension EventProfile {
 
     /// Built-in profiles created on first launch.
     static let defaults: [EventProfile] = [

@@ -62,37 +62,40 @@ final class EventProfileManager: ObservableObject {
 
     /// Load profiles from disk. Creates defaults on first launch.
     func loadProfiles() {
-        Task.detached { [weak self] in
-            guard let self else { return }
+        let indexURL = self.indexFileURL
+        let profilesDir = self.profilesRoot
+        let logger = self.logger
 
-            var loaded: [EventProfile] = []
+        Task.detached {
+            var result: [EventProfile] = []
 
             do {
-                let data = try Data(contentsOf: self.indexFileURL)
-                loaded = try Self.sharedDecoder.decode([EventProfile].self, from: data)
-                self.logger.info("Loaded \(loaded.count) profiles from disk")
+                let data = try Data(contentsOf: indexURL)
+                result = try Self.sharedDecoder.decode([EventProfile].self, from: data)
+                logger.info("Loaded \(result.count) profiles from disk")
             } catch {
-                self.logger.info("No profiles found (first launch): \(error.localizedDescription)")
+                logger.info("No profiles found (first launch): \(error.localizedDescription)")
             }
 
             // Seed defaults if empty
-            if loaded.isEmpty {
-                loaded = EventProfile.defaults
+            if result.isEmpty {
+                result = EventProfile.defaults
                 Self.writeIndexToDisk(
-                    profiles: loaded,
-                    indexURL: self.indexFileURL,
-                    profilesDir: self.profilesRoot
+                    profiles: result,
+                    indexURL: indexURL,
+                    profilesDir: profilesDir
                 )
-                self.logger.info("Created \(loaded.count) default profiles")
+                logger.info("Created \(result.count) default profiles")
             }
 
             // Resolve active profile
             let savedActiveID = UserDefaults.standard.string(forKey: Self.activeIDKey)
                 .flatMap { UUID(uuidString: $0) }
-            let active = loaded.first(where: { $0.id == savedActiveID }) ?? loaded[0]
+            let active = result.first(where: { $0.id == savedActiveID }) ?? result[0]
+            let finalResult = result
 
-            await MainActor.run {
-                self.profiles = loaded
+            await MainActor.run { [finalResult, active] in
+                self.profiles = finalResult
                 self.activeProfile = active
             }
         }
