@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import UIKit
 
 // MARK: - Built-in Print Templates
 
@@ -208,7 +209,7 @@ enum PrintTemplates {
     // MARK: - Template Lookup
 
     /// Find the best matching template for a given layout mode.
-    static func templateFor(layoutMode: LayoutMode) -> PrintLayout {
+    static func templateFor(layoutMode: SessionConfig.LayoutMode) -> PrintLayout {
         switch layoutMode {
         case .single: return photoCard
         case .duo:    return photoCard  // Use photo card for 2 photos (print first)
