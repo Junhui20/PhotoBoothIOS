@@ -66,20 +66,19 @@ final class SessionViewModel: ObservableObject {
         }
     }
 
-    /// Retake the last photo: review → countdown.
+    /// Retake: review → attract (full restart).
     func retakePhoto() {
         guard phase == .review, config.allowRetake, retakeCount < config.maxRetakes else { return }
 
         retakeCount += 1
-
-        // Remove the last captured photo
-        if !capturedPhotos.isEmpty {
-            capturedPhotos.removeLast()
-            currentPhotoIndex = capturedPhotos.count
-        }
+        stopAutoReturnTimer()
+        capturedPhotos = []
+        currentPhotoIndex = 0
 
         HapticManager.light()
-        beginCountdown()
+        withAnimation(.easeInOut(duration: 0.4)) {
+            phase = .attract
+        }
     }
 
     /// Accept captured photos with selected filter: review → sharing.
