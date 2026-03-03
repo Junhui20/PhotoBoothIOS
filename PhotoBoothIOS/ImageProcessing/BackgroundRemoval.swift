@@ -202,7 +202,7 @@ final class BackgroundRemoval: @unchecked Sendable {
     }
 
     nonisolated private func applyMedianFilter(to image: CIImage) -> CIImage {
-        let filter = CIFilter.medianFilter()
+        let filter = CIFilter.median()
         filter.inputImage = image
         return filter.outputImage ?? image
     }
