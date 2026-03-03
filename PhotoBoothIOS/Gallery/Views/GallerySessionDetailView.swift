@@ -187,14 +187,11 @@ struct GallerySessionDetailView: View {
         let count = session.photoCount
 
         Task.detached {
-            var images: [UIImage] = []
-            for i in 0..<count {
-                if let img = store.loadProcessedImage(sessionID: sid, index: i) {
-                    images.append(img)
-                }
+            let loaded: [UIImage] = (0..<count).compactMap { i in
+                store.loadProcessedImage(sessionID: sid, index: i)
             }
             await MainActor.run {
-                processedImages = images
+                processedImages = loaded
                 isLoading = false
             }
         }

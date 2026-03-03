@@ -33,8 +33,8 @@ final class GalleryStore: ObservableObject {
         subsystem: "com.photobooth.gallery", category: "GalleryStore"
     )
 
-    /// In-memory thumbnail cache (thread-safe).
-    private nonisolated let thumbnailCache = NSCache<NSString, UIImage>()
+    /// In-memory thumbnail cache (NSCache is thread-safe internally).
+    private nonisolated(unsafe) let thumbnailCache = NSCache<NSString, UIImage>()
 
     // MARK: - Shared Encoder/Decoder (nonisolated, thread-safe after init)
 
