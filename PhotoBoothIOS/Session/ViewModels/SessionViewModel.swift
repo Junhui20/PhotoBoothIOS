@@ -187,11 +187,10 @@ final class SessionViewModel: ObservableObject {
         Task {
             do {
                 let photo = try await cameraManager.capturePhoto(preFocused: true) { [weak self] in
-                    // Fires the INSTANT the camera shutter triggers — synced with real shutter
+                    // PTP response = "command received", not "shutter fired"
+                    // Camera shutter fires ~150ms later — don't play iPad sound,
+                    // let the camera's own shutter sound handle audio feedback.
                     guard let self else { return }
-                    if self.config.playShutterSound {
-                        SoundManager.shared.playShutterClick()
-                    }
                     HapticManager.heavy()
                     // Brief flash effect
                     withAnimation(.easeIn(duration: 0.05)) {
