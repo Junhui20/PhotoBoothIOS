@@ -37,6 +37,9 @@ struct SessionContainerView: View {
                         connectionText: cameraManager.connectionState.displayText,
                         branding: profileManager.activeProfile.branding,
                         profileName: profileManager.activeProfile.name,
+                        cameraName: cameraManager.deviceInfo.displayName,
+                        batteryLevel: cameraManager.cameraSettings.batteryLevel,
+                        shotCount: cameraManager.cameraSettings.availableShots,
                         onStart: { sessionVM.startSession() },
                         onSettings: { showSettings = true },
                         onGallery: { showGallery = true }
@@ -228,20 +231,7 @@ struct SessionContainerView: View {
                 // Tab content
                 switch settingsTab {
                 case .camera:
-                    LiveViewDisplay(
-                        image: cameraManager.liveViewImage,
-                        isConnected: cameraManager.connectionState.isReady
-                    )
-                    .aspectRatio(3.0 / 2.0, contentMode: .fit)
-                    .cornerRadius(12)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
-
-                    CameraSettingsPanel(
-                        activeSetting: $activeSetting,
-                        isManualMode: $isManualMode
-                    )
-                    .padding(.top, 8)
+                    cameraSettingsTab
 
                 case .printer:
                     PrinterSettingsPanel()
@@ -266,6 +256,86 @@ struct SessionContainerView: View {
             }
         }
         .preferredColorScheme(.dark)
+    }
+
+    /// Camera tab: settings on left, live preview on right.
+    private var cameraSettingsTab: some View {
+        HStack(alignment: .top, spacing: 16) {
+            // Left column — camera settings
+            ScrollView {
+                CameraSettingsPanel(
+                    activeSetting: $activeSetting,
+                    isManualMode: $isManualMode
+                )
+            }
+            .frame(maxWidth: .infinity)
+
+            // Right column — live preview + EV
+            VStack(spacing: 12) {
+                // Live camera preview
+                LiveViewDisplay(
+                    image: cameraManager.liveViewImage,
+                    isConnected: cameraManager.connectionState.isReady
+                )
+                .aspectRatio(3.0 / 2.0, contentMode: .fit)
+                .cornerRadius(12)
+                .overlay(alignment: .bottomLeading) {
+                    // LIVE indicator
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 8, height: 8)
+                        Text("LIVE")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.red)
+                    }
+                    .padding(8)
+                }
+
+                // EV compensation slider
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Exposure Compensation")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white)
+
+                    HStack(spacing: 8) {
+                        Text("-3")
+                            .font(.system(size: 11))
+                            .foregroundColor(.gray)
+                        GeometryReader { geo in
+                            let evValues = ExposureCompValue.allCases
+                            let currentIndex = evValues.firstIndex(of: cameraManager.cameraSettings.exposureComp) ?? 9
+                            let progress = CGFloat(currentIndex) / CGFloat(evValues.count - 1)
+                            ZStack(alignment: .leading) {
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(Color.white.opacity(0.15))
+                                    .frame(height: 4)
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(Color(red: 0.39, green: 0.4, blue: 0.95))
+                                    .frame(width: geo.size.width * progress, height: 4)
+                                Circle()
+                                    .fill(.white)
+                                    .frame(width: 16, height: 16)
+                                    .shadow(color: .black.opacity(0.3), radius: 4, y: 2)
+                                    .offset(x: geo.size.width * progress - 8)
+                            }
+                            .frame(height: 16)
+                        }
+                        .frame(height: 16)
+                        Text("+3")
+                            .font(.system(size: 11))
+                            .foregroundColor(.gray)
+                    }
+                }
+                .padding(16)
+                .background(Color(white: 0.09))
+                .cornerRadius(12)
+            }
+            .frame(width: 340)
+            .padding(.top, 12)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
     }
 
     // MARK: - External Capture Handling

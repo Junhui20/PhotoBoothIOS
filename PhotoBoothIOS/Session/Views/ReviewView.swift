@@ -3,7 +3,8 @@ import Vision
 
 /// Shows captured photo(s) for approval with accept/retake buttons.
 ///
-/// Includes a filter picker, background picker, auto-advance timer bar, and layout support.
+/// Layout: timer bar at top, photo + bg pickers on left, filters on right,
+/// full-width bottom action bar (Retake outlined left, Love It! gradient right).
 struct ReviewView: View {
 
     let photos: [CapturedPhoto]
@@ -12,89 +13,75 @@ struct ReviewView: View {
     let config: SessionConfig
 
     @State private var timerProgress: CGFloat = 0.0
+    @State private var remainingSeconds: Int = 0
     @State private var selectedFilter: PhotoFilter = .natural
     @State private var selectedBackground: BackgroundOption = BackgroundOption.allOptions[0]
     @State private var filteredImage: UIImage?
     @State private var processedImage: UIImage?
 
+    private let indigo = Color(red: 0.39, green: 0.4, blue: 0.95)
+
     var body: some View {
         ZStack {
-            Color.black.opacity(0.85)
+            Color.black.opacity(0.92)
                 .ignoresSafeArea()
 
-            VStack(spacing: 16) {
+            VStack(spacing: 0) {
+                // Timer bar at top
+                timerBar
+
                 // Header
-                Text(photos.count > 1 ? "Your Photos!" : "Your Photo!")
-                    .font(.system(size: 28, weight: .bold, design: .rounded))
-                    .foregroundColor(.white)
+                headerRow
+                    .padding(.horizontal, 32)
+                    .padding(.vertical, 12)
 
-                // Photo display (with filter applied)
-                photoDisplay
-                    .frame(maxHeight: UIScreen.main.bounds.height * 0.45)
+                // Main content: photo left + filters right
+                HStack(alignment: .top, spacing: 24) {
+                    // Left: photo + background pickers
+                    VStack(spacing: 12) {
+                        photoDisplay
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .clipped()
 
-                // Filter picker
-                FilterPickerView(
-                    sourceImage: photos.last?.uiImage,
-                    selectedFilter: $selectedFilter
-                )
-
-                // Background picker
-                BackgroundPickerView(
-                    sourceImage: photos.last?.uiImage,
-                    selectedBackground: $selectedBackground
-                )
-
-                // Action buttons
-                HStack(spacing: 24) {
-                    if config.allowRetake {
-                        Button(action: {
-                            HapticManager.light()
-                            onRetake()
-                        }) {
-                            Label("Retake", systemImage: "arrow.counterclockwise")
-                                .font(.title3.weight(.semibold))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 36)
-                                .padding(.vertical, 16)
-                                .background(Color.white.opacity(0.15))
-                                .cornerRadius(16)
-                        }
+                        BackgroundPickerView(
+                            sourceImage: photos.last?.uiImage,
+                            selectedBackground: $selectedBackground
+                        )
                     }
+                    .frame(maxWidth: .infinity)
 
-                    Button(action: {
-                        HapticManager.success()
-                        onAccept(selectedFilter, selectedBackground)
-                    }) {
-                        Label("Love it!", systemImage: "heart.fill")
-                            .font(.title3.weight(.bold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 36)
-                            .padding(.vertical, 16)
-                            .background(Color.pink)
-                            .cornerRadius(16)
+                    // Right: filters
+                    VStack(spacing: 0) {
+                        FilterPickerView(
+                            sourceImage: photos.last?.uiImage,
+                            selectedFilter: $selectedFilter
+                        )
                     }
+                    .frame(width: 300)
                 }
+                .padding(.horizontal, 32)
+                .frame(maxHeight: .infinity)
 
-                // Auto-advance timer bar
-                GeometryReader { geo in
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(Color.white.opacity(0.15))
-                        .frame(height: 4)
-                        .overlay(alignment: .leading) {
-                            RoundedRectangle(cornerRadius: 2)
-                                .fill(Color.cyan)
-                                .frame(width: geo.size.width * timerProgress, height: 4)
-                        }
-                }
-                .frame(height: 4)
-                .padding(.horizontal, 40)
+                // Bottom action bar
+                actionBar
+                    .padding(.horizontal, 32)
+                    .padding(.vertical, 16)
             }
-            .padding(24)
         }
         .onAppear {
+            remainingSeconds = Int(config.reviewDuration)
             timerProgress = 0
             withAnimation(.linear(duration: config.reviewDuration)) {
                 timerProgress = 1.0
+            }
+        }
+        .task {
+            // Countdown for header display
+            for _ in 0..<Int(config.reviewDuration) {
+                try? await Task.sleep(for: .seconds(1))
+                if remainingSeconds > 0 {
+                    remainingSeconds -= 1
+                }
             }
         }
         .onChange(of: selectedFilter) { newFilter in
@@ -102,6 +89,99 @@ struct ReviewView: View {
         }
         .onChange(of: selectedBackground) { newBg in
             applyPreview(filter: selectedFilter, background: newBg)
+        }
+    }
+
+    // MARK: - Timer Bar
+
+    private var timerBar: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Rectangle()
+                    .fill(Color.white.opacity(0.06))
+                Rectangle()
+                    .fill(
+                        LinearGradient(
+                            colors: [indigo, indigo.opacity(0.8)],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(width: geo.size.width * timerProgress)
+            }
+        }
+        .frame(height: 4)
+    }
+
+    // MARK: - Header
+
+    private var headerRow: some View {
+        HStack {
+            Text(photos.count > 1 ? "Review Your Photos" : "Review Your Photo")
+                .font(.system(size: 22, weight: .bold, design: .serif))
+                .foregroundColor(.white)
+
+            Spacer()
+
+            HStack(spacing: 6) {
+                Image(systemName: "timer")
+                    .font(.system(size: 14))
+                    .foregroundColor(.gray)
+                Text("Auto-accept in \(remainingSeconds)s")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.gray)
+            }
+        }
+    }
+
+    // MARK: - Action Bar
+
+    private var actionBar: some View {
+        HStack(spacing: 16) {
+            if config.allowRetake {
+                Button(action: {
+                    HapticManager.light()
+                    onRetake()
+                }) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.system(size: 16))
+                        Text("Retake")
+                            .font(.system(size: 15, weight: .semibold))
+                    }
+                    .foregroundColor(.white)
+                    .frame(width: 180, height: 52)
+                    .background(Color.white.opacity(0.06))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14)
+                            .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                    )
+                    .cornerRadius(14)
+                }
+            }
+
+            Button(action: {
+                HapticManager.success()
+                onAccept(selectedFilter, selectedBackground)
+            }) {
+                HStack(spacing: 10) {
+                    Image(systemName: "heart.fill")
+                        .font(.system(size: 18))
+                    Text("Love It!")
+                        .font(.system(size: 18, weight: .bold))
+                }
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity, minHeight: 52)
+                .background(
+                    LinearGradient(
+                        colors: [indigo, Color(red: 0.31, green: 0.27, blue: 0.90)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .cornerRadius(14)
+                .shadow(color: indigo.opacity(0.25), radius: 16, y: 8)
+            }
         }
     }
 
@@ -139,8 +219,8 @@ struct ReviewView: View {
             Image(uiImage: displayImage)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
-                .cornerRadius(12)
-                .shadow(color: .white.opacity(0.1), radius: 20)
+                .cornerRadius(16)
+                .shadow(color: .white.opacity(0.05), radius: 20)
         } else if let photo = photos.last {
             photoImage(photo)
         }
@@ -152,8 +232,8 @@ struct ReviewView: View {
             Image(uiImage: image)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
-                .cornerRadius(12)
-                .shadow(color: .white.opacity(0.1), radius: 20)
+                .cornerRadius(16)
+                .shadow(color: .white.opacity(0.05), radius: 20)
         }
     }
 
@@ -165,7 +245,6 @@ struct ReviewView: View {
         let isNaturalFilter = (filter.id == "natural")
         let isOriginalBg = background.isOriginal
 
-        // No processing needed — show original
         if isNaturalFilter && isOriginalBg {
             filteredImage = nil
             processedImage = nil
@@ -176,12 +255,10 @@ struct ReviewView: View {
         let bgType = background.type
 
         Task.detached(priority: .userInitiated) {
-            // Step 1: Apply filter
             let filtered = isNaturalFilter
                 ? sourceImage
                 : FilterEngine.shared.applyFilter(filter, to: sourceImage)
 
-            // Step 2: Apply background removal
             let finalImage: UIImage
             if !isOriginalBg {
                 let removal = BackgroundRemoval()
