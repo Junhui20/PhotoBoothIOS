@@ -1,4 +1,5 @@
 import SwiftUI
+import Vision
 
 /// Shows captured photo(s) for approval with accept/retake buttons.
 ///
