@@ -1,4 +1,5 @@
 import SwiftUI
+import Vision
 
 /// Predefined background option for the picker.
 struct BackgroundOption: Identifiable, Equatable, Sendable {
@@ -6,15 +7,15 @@ struct BackgroundOption: Identifiable, Equatable, Sendable {
     let name: String
     let type: BackgroundType
 
-    /// Check if this is the "original" (no change) option.
-    var isOriginal: Bool { id == "original" }
-
     nonisolated static func == (lhs: BackgroundOption, rhs: BackgroundOption) -> Bool {
         lhs.id == rhs.id
     }
 }
 
 nonisolated extension BackgroundOption {
+
+    /// Check if this is the "original" (no change) option.
+    var isOriginal: Bool { id == "original" }
 
     static let allOptions: [BackgroundOption] = [
         BackgroundOption(id: "original", name: "Original", type: .original),

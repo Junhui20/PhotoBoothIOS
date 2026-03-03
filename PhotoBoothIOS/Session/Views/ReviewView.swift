@@ -176,31 +176,30 @@ struct ReviewView: View {
         let bgType = background.type
 
         Task.detached(priority: .userInitiated) {
-            var result = sourceImage
-
             // Step 1: Apply filter
-            if !isNaturalFilter {
-                result = FilterEngine.shared.applyFilter(filter, to: result)
-            }
+            let filtered = isNaturalFilter
+                ? sourceImage
+                : FilterEngine.shared.applyFilter(filter, to: sourceImage)
 
             // Step 2: Apply background removal
+            let finalImage: UIImage
             if !isOriginalBg {
                 let removal = BackgroundRemoval()
-                if let processed = try? await removal.removeBackground(
-                    from: result,
+                finalImage = (try? await removal.removeBackground(
+                    from: filtered,
                     replacement: bgType,
                     quality: .fast
-                ) {
-                    result = processed
-                }
+                )) ?? filtered
+            } else {
+                finalImage = filtered
             }
 
             await MainActor.run {
                 if isOriginalBg {
-                    filteredImage = isNaturalFilter ? nil : result
+                    filteredImage = isNaturalFilter ? nil : finalImage
                     processedImage = nil
                 } else {
-                    processedImage = result
+                    processedImage = finalImage
                 }
             }
         }

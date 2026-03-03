@@ -2,7 +2,7 @@ import UIKit
 
 // MARK: - UIColor Hex Extension
 
-extension UIColor {
+nonisolated extension UIColor {
     /// Create a UIColor from a hex string like "#FF5733" or "FF5733".
     convenience init?(hex: String) {
         var hexStr = hex.trimmingCharacters(in: .whitespacesAndNewlines)

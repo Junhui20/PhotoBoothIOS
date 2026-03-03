@@ -4,7 +4,8 @@ import UIKit
 // MARK: - Paper Size
 
 /// Physical paper sizes with dimensions in inches.
-enum PaperSize: String, CaseIterable, Sendable {
+/// All members nonisolated — used from PrintLayoutRenderer's background thread.
+nonisolated enum PaperSize: String, CaseIterable, Sendable {
     case size2x6    // Photo strip
     case size4x6    // Standard photo print
     case size5x7
@@ -52,7 +53,7 @@ enum PaperSize: String, CaseIterable, Sendable {
 
 // MARK: - Print Orientation
 
-enum PrintOrientation: String, Sendable {
+nonisolated enum PrintOrientation: String, Sendable {
     case portrait
     case landscape
 }
@@ -62,7 +63,7 @@ enum PrintOrientation: String, Sendable {
 /// A rectangular region where a photo is placed in the layout.
 ///
 /// All coordinates are normalized 0-1 relative to the safe area.
-struct PhotoSlot: Identifiable, Sendable {
+nonisolated struct PhotoSlot: Identifiable, Sendable {
     let id: Int
     let rect: CGRect                // Normalized position/size
     let cornerRadius: CGFloat       // As fraction of min(width, height)
@@ -77,7 +78,7 @@ struct PhotoSlot: Identifiable, Sendable {
 /// A text region with token replacement support.
 ///
 /// Token ids like "eventName", "date", "hashtag" are replaced with actual values at render time.
-struct TextZone: Identifiable, Sendable {
+nonisolated struct TextZone: Identifiable, Sendable {
     let id: String
     let rect: CGRect                // Normalized position/size
     let defaultText: String
@@ -91,7 +92,7 @@ struct TextZone: Identifiable, Sendable {
 // MARK: - Background
 
 /// The background fill for a print layout.
-enum PrintBackground: Sendable {
+nonisolated enum PrintBackground: Sendable {
     case white
     case solidColor(hex: String)
     case gradient(topHex: String, bottomHex: String)
@@ -103,7 +104,7 @@ enum PrintBackground: Sendable {
 ///
 /// All photo/text positions use normalized 0-1 coordinates so templates
 /// render correctly at any DPI (72 for preview, 300 for print).
-struct PrintLayout: Identifiable, Sendable {
+nonisolated struct PrintLayout: Identifiable, Sendable {
     let id: String
     let name: String
     let iconName: String
