@@ -40,11 +40,12 @@ final class WiFiShareServer: ObservableObject, @unchecked Sendable {
         label: "photoboothios.wifiserver", qos: .utility
     )
 
-    private var listener: NWListener?
-    private var currentSessionID: String = ""
-    private var currentPhotos: [Data] = []
-    private var eventName: String = "PhotoBooth Pro"
-    private var hashtag: String?
+    // Accessed only from serverQueue — nonisolated(unsafe) opts out of MainActor checking
+    private nonisolated(unsafe) var listener: NWListener?
+    private nonisolated(unsafe) var currentSessionID: String = ""
+    private nonisolated(unsafe) var currentPhotos: [Data] = []
+    private nonisolated(unsafe) var eventName: String = "PhotoBooth Pro"
+    private nonisolated(unsafe) var hashtag: String?
 
     // MARK: - Public API
 
