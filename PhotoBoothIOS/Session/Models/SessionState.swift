@@ -20,7 +20,7 @@ enum SessionPhase: Equatable {
 }
 
 /// Capture mode for a session.
-enum CaptureMode: String, CaseIterable, Codable, Sendable {
+nonisolated enum CaptureMode: String, CaseIterable, Codable, Sendable {
     case photo          // Standard single/multi-photo capture
     case boomerangGIF   // Burst → forward+reverse loop GIF
     case burstGIF       // Burst → forward-only loop GIF
@@ -39,7 +39,7 @@ enum CaptureMode: String, CaseIterable, Codable, Sendable {
 }
 
 /// Configuration for a photobooth session.
-struct SessionConfig: Codable, Equatable, Sendable {
+nonisolated struct SessionConfig: Codable, Equatable, Sendable {
     var countdownSeconds: Int = 3
     var photoCount: Int = 1
     var reviewDuration: TimeInterval = 8.0

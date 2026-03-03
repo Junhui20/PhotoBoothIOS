@@ -1,7 +1,9 @@
 import Foundation
 
 /// Visual branding for the attract screen.
-struct AttractBranding: Codable, Equatable, Sendable {
+///
+/// Pure value type — nonisolated so it can be used from any context.
+nonisolated struct AttractBranding: Codable, Equatable, Sendable {
     var title: String = "PhotoBooth Pro"
     var subtitle: String = "Tap to Start"
     var primaryColorHex: String = "#00BFFF"       // Cyan
@@ -12,7 +14,8 @@ struct AttractBranding: Codable, Equatable, Sendable {
 ///
 /// Operators create profiles for different events and switch between them.
 /// Each profile stores attract screen branding and a full `SessionConfig`.
-struct EventProfile: Identifiable, Codable, Equatable, Sendable {
+/// Pure value type — nonisolated so it can be used from any context.
+nonisolated struct EventProfile: Identifiable, Codable, Equatable, Sendable {
     let id: UUID
     var name: String
     var branding: AttractBranding
