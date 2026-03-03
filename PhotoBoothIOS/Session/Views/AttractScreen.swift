@@ -16,26 +16,28 @@ struct AttractScreen: View {
 
     var body: some View {
         ZStack {
-            // Dark gradient background
-            LinearGradient(
-                colors: [Color.black, Color(white: 0.08)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .ignoresSafeArea()
+            if isCameraReady {
+                // Semi-transparent overlay over live preview
+                Color.black.opacity(0.4)
+                    .ignoresSafeArea()
+            } else {
+                // No camera — solid dark background
+                LinearGradient(
+                    colors: [Color.black, Color(white: 0.08)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .ignoresSafeArea()
+            }
 
             VStack(spacing: 40) {
                 Spacer()
-
-                // Camera icon
-                Image(systemName: "camera.fill")
-                    .font(.system(size: 60))
-                    .foregroundColor(.white.opacity(0.3))
 
                 // App title
                 Text("PhotoBooth Pro")
                     .font(.system(size: 42, weight: .bold, design: .rounded))
                     .foregroundColor(.white)
+                    .shadow(color: .black.opacity(0.6), radius: 10)
 
                 Spacer()
 

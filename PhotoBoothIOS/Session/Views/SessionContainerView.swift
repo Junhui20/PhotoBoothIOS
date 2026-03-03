@@ -14,11 +14,11 @@ struct SessionContainerView: View {
 
     var body: some View {
         ZStack {
-            // Always show live view in background during active phases
-            if sessionVM.phase != .attract {
+            // Live view background — shown during ALL phases when camera is connected
+            if cameraManager.connectionState.isReady {
                 LiveViewDisplay(
                     image: cameraManager.liveViewImage,
-                    isConnected: cameraManager.connectionState.isReady
+                    isConnected: true
                 )
                 .ignoresSafeArea()
             }
