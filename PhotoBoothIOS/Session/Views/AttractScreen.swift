@@ -3,18 +3,25 @@ import SwiftUI
 /// Idle/attract screen shown when no session is active.
 ///
 /// Shows camera connection status and animated "Tap to Start" prompt.
+/// Uses branding from the active event profile for title, subtitle, and colors.
 /// Gear icon in top-right opens camera settings for operator setup.
 /// Gallery icon in top-left opens saved photo gallery.
 struct AttractScreen: View {
 
     let isCameraReady: Bool
     let connectionText: String
+    let branding: AttractBranding
+    let profileName: String
     let onStart: () -> Void
     let onSettings: () -> Void
     let onGallery: () -> Void
 
     @State private var pulseScale: CGFloat = 1.0
     @State private var glowOpacity: Double = 0.4
+
+    private var primaryColor: Color {
+        Color(UIColor(hex: branding.primaryColorHex) ?? .cyan)
+    }
 
     var body: some View {
         ZStack {
@@ -35,8 +42,8 @@ struct AttractScreen: View {
             VStack(spacing: 40) {
                 Spacer()
 
-                // App title
-                Text("PhotoBooth Pro")
+                // App title (from branding)
+                Text(branding.title)
                     .font(.system(size: 42, weight: .bold, design: .rounded))
                     .foregroundColor(.white)
                     .shadow(color: .black.opacity(0.6), radius: 10)
@@ -44,15 +51,15 @@ struct AttractScreen: View {
                 Spacer()
 
                 if isCameraReady {
-                    // Camera connected — show "Tap to Start"
+                    // Camera connected — show tap prompt
                     VStack(spacing: 16) {
                         Image(systemName: "hand.tap.fill")
                             .font(.system(size: 44))
-                            .foregroundColor(.cyan)
+                            .foregroundColor(primaryColor)
                             .scaleEffect(pulseScale)
-                            .shadow(color: .cyan.opacity(glowOpacity), radius: 20)
+                            .shadow(color: primaryColor.opacity(glowOpacity), radius: 20)
 
-                        Text("Tap to Start")
+                        Text(branding.subtitle)
                             .font(.system(size: 32, weight: .semibold, design: .rounded))
                             .foregroundColor(.white)
                             .scaleEffect(pulseScale)
@@ -111,7 +118,14 @@ struct AttractScreen: View {
                         }
                     }
                 }
+
                 Spacer()
+
+                // Active profile indicator (bottom-center, small)
+                Text(profileName)
+                    .font(.caption2)
+                    .foregroundColor(.white.opacity(0.25))
+                    .padding(.bottom, 8)
             }
         }
         .contentShape(Rectangle())

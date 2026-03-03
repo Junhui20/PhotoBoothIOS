@@ -46,18 +46,20 @@ final class WiFiShareServer: ObservableObject, @unchecked Sendable {
     private nonisolated(unsafe) var currentPhotos: [Data] = []
     private nonisolated(unsafe) var eventName: String = "PhotoBooth Pro"
     private nonisolated(unsafe) var hashtag: String?
+    private nonisolated(unsafe) var isGIFSession: Bool = false
 
     // MARK: - Public API
 
-    /// Start serving photos for a new session.
+    /// Start serving photos (or a GIF) for a new session.
     ///
     /// Tries port 8080 first; falls back to any available port.
     /// - Parameters:
-    ///   - photos: JPEG data for each photo
+    ///   - photos: JPEG data for each photo, or a single GIF data element
     ///   - sessionID: Unique session identifier (used in URL path)
     ///   - eventName: Brand name shown on download page
     ///   - hashtag: Optional hashtag shown on download page
-    func start(photos: [Data], sessionID: String, eventName: String, hashtag: String?) {
+    ///   - isGIF: When true, serves content as image/gif instead of image/jpeg
+    func start(photos: [Data], sessionID: String, eventName: String, hashtag: String?, isGIF: Bool = false) {
         let photoData = photos
         let sid = sessionID
         let ename = eventName
@@ -70,6 +72,7 @@ final class WiFiShareServer: ObservableObject, @unchecked Sendable {
             self.currentPhotos = photoData
             self.eventName = ename
             self.hashtag = tag
+            self.isGIFSession = isGIF
             self.startListenerOnQueue(preferredPort: 8080)
         }
     }
@@ -156,6 +159,7 @@ final class WiFiShareServer: ObservableObject, @unchecked Sendable {
         listener = nil
         currentPhotos = []
         currentSessionID = ""
+        isGIFSession = false
     }
 
     // MARK: - Connection Handling (serverQueue)
@@ -198,6 +202,9 @@ final class WiFiShareServer: ObservableObject, @unchecked Sendable {
         let path = parts[1]
         let basePath = "/photo/\(currentSessionID)"
         let photos = currentPhotos
+        let isGIF = isGIFSession
+        let fileExtension = isGIF ? ".gif" : ".jpg"
+        let mimeType = isGIF ? "image/gif" : "image/jpeg"
 
         switch path {
         // HTML download page
@@ -206,18 +213,19 @@ final class WiFiShareServer: ObservableObject, @unchecked Sendable {
             let html = HTMLPageBuilder.buildPage(
                 eventName: eventName,
                 hashtag: hashtag,
-                imageURL: "\(basePath)/image\(photoIndex).jpg",
+                imageURL: "\(basePath)/image\(photoIndex)\(fileExtension)",
                 downloadURL: "\(basePath)/download",
-                photoCount: photos.count
+                photoCount: photos.count,
+                isGIF: isGIF
             )
             sendResponse(connection: connection, status: "200 OK",
                          contentType: "text/html; charset=utf-8", body: Data(html.utf8))
 
-        // JPEG preview image: /photo/{id}/image0.jpg, /photo/{id}/image1.jpg, etc.
-        case _ where path.hasPrefix(basePath + "/image") && path.hasSuffix(".jpg"):
+        // Image preview: /photo/{id}/image0.jpg or /photo/{id}/image0.gif
+        case _ where path.hasPrefix(basePath + "/image") && path.hasSuffix(fileExtension):
             let indexStr = path
                 .replacingOccurrences(of: basePath + "/image", with: "")
-                .replacingOccurrences(of: ".jpg", with: "")
+                .replacingOccurrences(of: fileExtension, with: "")
             let index = Int(indexStr) ?? 0
             guard index >= 0, index < photos.count else {
                 sendResponse(connection: connection, status: "404 Not Found",
@@ -225,7 +233,7 @@ final class WiFiShareServer: ObservableObject, @unchecked Sendable {
                 return
             }
             sendResponse(connection: connection, status: "200 OK",
-                         contentType: "image/jpeg", body: photos[index])
+                         contentType: mimeType, body: photos[index])
 
         // Download with Content-Disposition: attachment
         case basePath + "/download":
@@ -237,8 +245,9 @@ final class WiFiShareServer: ObservableObject, @unchecked Sendable {
             let sid = currentSessionID
             sendDownloadResponse(
                 connection: connection,
-                jpegData: photos[photos.count - 1],
-                filename: "photobooth-\(sid.prefix(8)).jpg"
+                fileData: photos[photos.count - 1],
+                filename: "photobooth-\(sid.prefix(8))\(fileExtension)",
+                contentType: mimeType
             )
 
         // Security: reject any path not matching current session
@@ -274,19 +283,20 @@ final class WiFiShareServer: ObservableObject, @unchecked Sendable {
 
     private nonisolated func sendDownloadResponse(
         connection: NWConnection,
-        jpegData: Data,
-        filename: String
+        fileData: Data,
+        filename: String,
+        contentType: String = "image/jpeg"
     ) {
         var header = "HTTP/1.1 200 OK\r\n"
-        header += "Content-Type: image/jpeg\r\n"
-        header += "Content-Length: \(jpegData.count)\r\n"
+        header += "Content-Type: \(contentType)\r\n"
+        header += "Content-Length: \(fileData.count)\r\n"
         header += "Content-Disposition: attachment; filename=\"\(filename)\"\r\n"
         header += "Connection: close\r\n"
         header += "Cache-Control: no-store\r\n"
         header += "\r\n"
 
         var responseData = Data(header.utf8)
-        responseData.append(jpegData)
+        responseData.append(fileData)
 
         connection.send(content: responseData, completion: .contentProcessed { [weak self] error in
             if let error { self?.logger.warning("Download send error: \(error)") }

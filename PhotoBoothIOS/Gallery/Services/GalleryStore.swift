@@ -193,6 +193,78 @@ final class GalleryStore: ObservableObject {
         logger.info("Session \(sessionID) saved to gallery")
     }
 
+    // MARK: - GIF Session Save
+
+    /// Save a GIF session to disk (GIF data + thumbnail).
+    func saveGIFSession(
+        gifData: Data,
+        thumbnailFrame: UIImage,
+        captureMode: CaptureMode
+    ) async {
+        let sessionID = UUID()
+        let timestamp = Date()
+        let sessionDir = sessionDirectory(for: sessionID)
+        let lgr = logger
+
+        await Task.detached(priority: .utility) {
+            do {
+                try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+
+                // Save animated GIF
+                let gifURL = sessionDir.appendingPathComponent("animation.gif")
+                try gifData.write(to: gifURL)
+
+                // Save thumbnail from first frame
+                let thumbURL = sessionDir.appendingPathComponent("thumb_0.jpg")
+                if let thumb = thumbnailFrame.preparingThumbnail(of: CGSize(width: 200, height: 200)),
+                   let thumbData = thumb.jpegData(compressionQuality: 0.75) {
+                    try thumbData.write(to: thumbURL)
+                }
+
+                lgr.info("Saved GIF session \(sessionID): \(gifData.count) bytes")
+            } catch {
+                lgr.error("Failed to save GIF session: \(error)")
+            }
+        }.value
+
+        let session = GallerySession(
+            id: sessionID,
+            timestamp: timestamp,
+            photoCount: 1,
+            filterName: "natural",
+            backgroundName: "Original",
+            captureMode: captureMode.rawValue,
+            hasGIF: true
+        )
+
+        var updated = sessions
+        updated.insert(session, at: 0)
+        sessions = updated
+
+        let indexURL = indexFileURL
+        let galleryDir = galleryRoot
+        await Task.detached(priority: .utility) {
+            Self.writeIndexToDisk(sessions: updated, indexURL: indexURL, galleryDir: galleryDir)
+        }.value
+
+        Task.detached { [weak self] in
+            guard let self else { return }
+            let size = self.computeStorageUsed()
+            await MainActor.run { self.storageString = size }
+        }
+
+        logger.info("GIF session \(sessionID) saved to gallery")
+    }
+
+    // MARK: - GIF Loading
+
+    /// Load GIF data for a session.
+    nonisolated func loadGIFData(sessionID: UUID) -> Data? {
+        let url = sessionDirectory(for: sessionID)
+            .appendingPathComponent("animation.gif")
+        return try? Data(contentsOf: url)
+    }
+
     // MARK: - Image Loading (nonisolated — safe from any thread)
 
     /// Load a thumbnail image for the gallery grid. Uses NSCache.

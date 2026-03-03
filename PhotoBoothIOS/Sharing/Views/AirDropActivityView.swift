@@ -5,9 +5,11 @@ import UIKit
 ///
 /// On iPad, `UIActivityViewController` MUST have `popoverPresentationController`
 /// configured or the app will crash. Pass the source button's global frame as `sourceRect`.
+///
+/// Accepts `[Any]` for activity items — pass `[UIImage]` for photos or a `[URL]` for GIF files.
 struct AirDropActivityView: UIViewControllerRepresentable {
 
-    let images: [UIImage]
+    let activityItems: [Any]
     let sourceRect: CGRect
     let onComplete: (Bool) -> Void
 
@@ -22,7 +24,7 @@ struct AirDropActivityView: UIViewControllerRepresentable {
         guard uiViewController.presentedViewController == nil else { return }
 
         let activityVC = UIActivityViewController(
-            activityItems: images,
+            activityItems: activityItems,
             applicationActivities: nil
         )
 

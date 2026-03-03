@@ -36,4 +36,22 @@ enum PhotoLibraryHelper {
             Task { @MainActor in completion?(true) }
         }
     }
+
+    /// Save a GIF file to the photo library as an animated image.
+    ///
+    /// Uses `PHAssetChangeRequest` to preserve GIF animation (unlike `UIImageWriteToSavedPhotosAlbum`
+    /// which would flatten to a static image).
+    static func saveGIFToPhotos(_ fileURL: URL, completion: ((Bool) -> Void)? = nil) {
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+            guard status == .authorized || status == .limited else {
+                Task { @MainActor in completion?(false) }
+                return
+            }
+            PHPhotoLibrary.shared().performChanges {
+                PHAssetChangeRequest.creationRequestForAssetFromImage(atFileURL: fileURL)
+            } completionHandler: { success, _ in
+                Task { @MainActor in completion?(success) }
+            }
+        }
+    }
 }

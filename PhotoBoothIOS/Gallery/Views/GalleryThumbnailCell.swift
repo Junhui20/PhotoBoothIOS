@@ -31,17 +31,31 @@ struct GalleryThumbnailCell: View {
                         )
                 }
 
-                // Photo count badge (multi-photo sessions)
-                if session.photoCount > 1 {
-                    Text("\(session.photoCount)")
-                        .font(.caption2.weight(.bold))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.black.opacity(0.6))
-                        .cornerRadius(6)
-                        .padding(6)
+                // Badges
+                VStack(spacing: 4) {
+                    // GIF badge
+                    if session.hasGIF {
+                        Text("GIF")
+                            .font(.caption2.weight(.bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.purple.opacity(0.8))
+                            .cornerRadius(6)
+                    }
+
+                    // Photo count badge (multi-photo sessions)
+                    if session.photoCount > 1 && !session.hasGIF {
+                        Text("\(session.photoCount)")
+                            .font(.caption2.weight(.bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.black.opacity(0.6))
+                            .cornerRadius(6)
+                    }
                 }
+                .padding(6)
             }
 
             // Date label

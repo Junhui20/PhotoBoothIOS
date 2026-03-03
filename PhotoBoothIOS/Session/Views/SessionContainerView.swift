@@ -8,13 +8,14 @@ struct SessionContainerView: View {
 
     @ObservedObject var sessionVM: SessionViewModel
     @EnvironmentObject var cameraManager: CameraManager
+    @EnvironmentObject var profileManager: EventProfileManager
     @State private var showSettings = false
     @State private var showGallery = false
     @State private var activeSetting: CameraSettingsPanel.SettingType?
     @State private var isManualMode: Bool = false
     @State private var settingsTab: SettingsTab = .camera
 
-    private enum SettingsTab { case camera, printer }
+    private enum SettingsTab { case camera, printer, events }
 
     var body: some View {
         ZStack {
@@ -34,6 +35,8 @@ struct SessionContainerView: View {
                     AttractScreen(
                         isCameraReady: cameraManager.connectionState.isReady,
                         connectionText: cameraManager.connectionState.displayText,
+                        branding: profileManager.activeProfile.branding,
+                        profileName: profileManager.activeProfile.name,
                         onStart: { sessionVM.startSession() },
                         onSettings: { showSettings = true },
                         onGallery: { showGallery = true }
@@ -49,35 +52,61 @@ struct SessionContainerView: View {
                         .transition(.opacity)
 
                 case .capturing:
-                    CaptureFlashView()
-                        .transition(.opacity)
+                    if sessionVM.config.captureMode.isGIF {
+                        // GIF burst capture — show recording indicator
+                        GIFRecordingOverlay()
+                    } else {
+                        CaptureFlashView()
+                    }
 
                 case .processing:
                     ProcessingView()
                         .transition(.opacity)
 
                 case .review:
-                    ReviewView(
-                        photos: sessionVM.capturedPhotos,
-                        onRetake: { sessionVM.retakePhoto() },
-                        onAccept: { filter, background in
-                            sessionVM.acceptPhotos(filter: filter, background: background)
-                        },
-                        config: sessionVM.config
-                    )
-                    .transition(.move(edge: .trailing))
+                    if sessionVM.config.captureMode.isGIF {
+                        GIFReviewView(
+                            frames: sessionVM.capturedGIFFrames,
+                            gifData: sessionVM.capturedGIFData,
+                            isBoomerang: sessionVM.config.captureMode == .boomerangGIF,
+                            onRetake: { sessionVM.retakePhoto() },
+                            onAccept: { sessionVM.acceptPhotos() },
+                            config: sessionVM.config
+                        )
+                        .transition(.move(edge: .trailing))
+                    } else {
+                        ReviewView(
+                            photos: sessionVM.capturedPhotos,
+                            onRetake: { sessionVM.retakePhoto() },
+                            onAccept: { filter, background in
+                                sessionVM.acceptPhotos(filter: filter, background: background)
+                            },
+                            config: sessionVM.config
+                        )
+                        .transition(.move(edge: .trailing))
+                    }
 
                 case .sharing:
-                    ShareView(
-                        photos: sessionVM.capturedPhotos,
-                        selectedFilter: sessionVM.selectedFilter,
-                        selectedBackground: sessionVM.selectedBackground,
-                        onDone: { sessionVM.completeSession() }
-                    )
-                    .transition(.move(edge: .trailing))
+                    if sessionVM.config.captureMode.isGIF {
+                        ShareView(
+                            photos: [],
+                            selectedFilter: .natural,
+                            selectedBackground: BackgroundOption.allOptions[0],
+                            gifData: sessionVM.capturedGIFData,
+                            onDone: { sessionVM.completeSession() }
+                        )
+                        .transition(.move(edge: .trailing))
+                    } else {
+                        ShareView(
+                            photos: sessionVM.capturedPhotos,
+                            selectedFilter: sessionVM.selectedFilter,
+                            selectedBackground: sessionVM.selectedBackground,
+                            onDone: { sessionVM.completeSession() }
+                        )
+                        .transition(.move(edge: .trailing))
+                    }
 
                 case .complete:
-                    // Brief moment before returning to attract
                     Color.black.ignoresSafeArea()
                         .transition(.opacity)
                 }
@@ -93,6 +122,7 @@ struct SessionContainerView: View {
 
             // Multi-photo progress indicator
             if case .countdown = sessionVM.phase,
+               !sessionVM.config.captureMode.isGIF,
                sessionVM.config.layoutMode != .single {
                 VStack {
                     Spacer()
@@ -132,6 +162,15 @@ struct SessionContainerView: View {
                 Text(cameraManager.deviceInfo.displayName)
                     .font(.caption)
                     .foregroundColor(.white.opacity(0.7))
+            }
+
+            Spacer()
+
+            // Capture mode indicator
+            if sessionVM.config.captureMode.isGIF {
+                Label(sessionVM.config.captureMode.displayName, systemImage: "arrow.2.squarepath")
+                    .font(.caption)
+                    .foregroundColor(.cyan.opacity(0.7))
             }
 
             Spacer()
@@ -180,6 +219,7 @@ struct SessionContainerView: View {
                 Picker("Settings", selection: $settingsTab) {
                     Text("Camera").tag(SettingsTab.camera)
                     Text("Printer").tag(SettingsTab.printer)
+                    Text("Events").tag(SettingsTab.events)
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal, 16)
@@ -206,6 +246,10 @@ struct SessionContainerView: View {
                 case .printer:
                     PrinterSettingsPanel()
                         .padding(.top, 16)
+
+                case .events:
+                    ProfileListView()
+                        .padding(.top, 8)
                 }
 
                 Spacer()
@@ -234,5 +278,37 @@ struct SessionContainerView: View {
             // The photo is already in cameraManager.lastCapturedPhoto
         }
         // During active session, SessionViewModel handles capture via cameraManager.capturePhoto()
+    }
+}
+
+// MARK: - GIF Recording Overlay
+
+/// Shown during GIF burst capture — pulsing indicator over live view.
+private struct GIFRecordingOverlay: View {
+
+    @State private var isPulsing = false
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.3)
+                .ignoresSafeArea()
+
+            VStack(spacing: 16) {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 20, height: 20)
+                    .scaleEffect(isPulsing ? 1.3 : 1.0)
+                    .opacity(isPulsing ? 0.6 : 1.0)
+
+                Text("Recording...")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+            }
+            .onAppear {
+                withAnimation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true)) {
+                    isPulsing = true
+                }
+            }
+        }
     }
 }

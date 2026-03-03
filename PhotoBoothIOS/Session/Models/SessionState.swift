@@ -19,8 +19,27 @@ enum SessionPhase: Equatable {
     }
 }
 
+/// Capture mode for a session.
+enum CaptureMode: String, CaseIterable, Codable, Sendable {
+    case photo          // Standard single/multi-photo capture
+    case boomerangGIF   // Burst → forward+reverse loop GIF
+    case burstGIF       // Burst → forward-only loop GIF
+
+    var isGIF: Bool {
+        self != .photo
+    }
+
+    var displayName: String {
+        switch self {
+        case .photo:        return "Photo"
+        case .boomerangGIF: return "Boomerang"
+        case .burstGIF:     return "Burst GIF"
+        }
+    }
+}
+
 /// Configuration for a photobooth session.
-struct SessionConfig {
+struct SessionConfig: Codable, Equatable, Sendable {
     var countdownSeconds: Int = 3
     var photoCount: Int = 1
     var reviewDuration: TimeInterval = 8.0
@@ -33,7 +52,12 @@ struct SessionConfig {
     var autoSaveToPhotos: Bool = true
     var layoutMode: LayoutMode = .single
 
-    enum LayoutMode: String, CaseIterable {
+    // GIF capture settings
+    var captureMode: CaptureMode = .photo
+    var gifFrameCount: Int = 12        // Number of frames for GIF capture
+    var gifFrameInterval: Int = 80     // Milliseconds between GIF frames
+
+    enum LayoutMode: String, CaseIterable, Codable, Sendable {
         case single     // 1 photo
         case strip      // 3 photos vertical strip (2x6)
         case grid4      // 4 photos in grid (4x6)

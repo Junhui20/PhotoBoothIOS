@@ -5,24 +5,27 @@ import Foundation
 /// All methods are pure functions — no state, no actor isolation.
 nonisolated enum HTMLPageBuilder {
 
-    /// Build the full HTML page for a photo download session.
+    /// Build the full HTML page for a photo or GIF download session.
     ///
     /// - Parameters:
     ///   - eventName: Event brand name shown at the top
     ///   - hashtag: Optional hashtag (include # character) shown below the photo
-    ///   - imageURL: Relative URL of the preview JPEG (e.g., "/photo/{id}/image0.jpg")
+    ///   - imageURL: Relative URL of the preview image (e.g., "/photo/{id}/image0.jpg")
     ///   - downloadURL: Relative URL for the download button (e.g., "/photo/{id}/download")
     ///   - photoCount: Number of photos available
+    ///   - isGIF: When true, adjusts text and title for GIF content
     /// - Returns: Complete UTF-8 HTML string
     static func buildPage(
         eventName: String,
         hashtag: String?,
         imageURL: String,
         downloadURL: String,
-        photoCount: Int
+        photoCount: Int,
+        isGIF: Bool = false
     ) -> String {
         let escapedName = htmlEscaped(eventName)
         let hashtagHTML = hashtag.map { "<p class=\"hashtag\">\(htmlEscaped($0))</p>" } ?? ""
+        let contentLabel = isGIF ? "GIF" : "photo"
 
         return """
         <!DOCTYPE html>
@@ -32,7 +35,7 @@ nonisolated enum HTMLPageBuilder {
           <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
           <meta name="theme-color" content="#000000">
           <meta name="apple-mobile-web-app-capable" content="yes">
-          <title>\(escapedName) — Your Photo</title>
+          <title>\(escapedName) — Your \(contentLabel.capitalized)</title>
           <style>
             *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
             html, body {
@@ -113,14 +116,14 @@ nonisolated enum HTMLPageBuilder {
         <body>
           <header>
             <h1>\(escapedName)</h1>
-            <p class="subtitle">Your photobooth photo is ready!</p>
+            <p class="subtitle">Your photobooth \(contentLabel) is ready!</p>
           </header>
 
           <div class="photo-card">
-            <img src="\(imageURL)" alt="Your photobooth photo" draggable="false" loading="eager">
+            <img src="\(imageURL)" alt="Your photobooth \(contentLabel)" draggable="false" loading="eager">
             <div class="card-footer">
               \(hashtagHTML)
-              <a href="\(downloadURL)" class="btn-download" download>Save Photo</a>
+              <a href="\(downloadURL)" class="btn-download" download>Save \(contentLabel.capitalized)</a>
             </div>
           </div>
 

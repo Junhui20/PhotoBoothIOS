@@ -4,6 +4,7 @@ import SwiftUI
 ///
 /// Shows all photos from the session with options to re-share,
 /// re-print, save to camera roll, or delete the session.
+/// For GIF sessions, shows animated playback.
 struct GallerySessionDetailView: View {
 
     let session: GallerySession
@@ -15,6 +16,8 @@ struct GallerySessionDetailView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var processedImages: [UIImage] = []
+    @State private var gifFrames: [(image: UIImage, delay: TimeInterval)] = []
+    @State private var gifData: Data?
     @State private var isLoading = true
     @State private var showDeleteAlert = false
     @State private var showPrintPreview = false
@@ -29,7 +32,7 @@ struct GallerySessionDetailView: View {
                 ProgressView()
                     .tint(.white)
                     .scaleEffect(1.5)
-            } else if processedImages.isEmpty {
+            } else if processedImages.isEmpty && gifFrames.isEmpty {
                 VStack(spacing: 12) {
                     Image(systemName: "exclamationmark.triangle")
                         .font(.system(size: 40))
@@ -42,7 +45,13 @@ struct GallerySessionDetailView: View {
                 ScrollView {
                     VStack(spacing: 20) {
                         sessionHeader
-                        photoGrid
+
+                        if session.hasGIF {
+                            gifPlayback
+                        } else {
+                            photoGrid
+                        }
+
                         actionButtons
                         deleteButton
                     }
@@ -52,8 +61,12 @@ struct GallerySessionDetailView: View {
         }
         .navigationTitle("Session")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { loadPhotos() }
-        .onDisappear { processedImages = [] } // Release memory
+        .onAppear { loadContent() }
+        .onDisappear {
+            processedImages = []
+            gifFrames = []
+            gifData = nil
+        }
         .alert("Delete Session?", isPresented: $showDeleteAlert) {
             Button("Delete", role: .destructive) {
                 galleryStore.deleteSession(session)
@@ -61,7 +74,7 @@ struct GallerySessionDetailView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This will permanently delete all \(session.photoCount) photos from this session.")
+            Text("This will permanently delete this session.")
         }
         .sheet(isPresented: $showPrintPreview) {
             PrintPreviewView(
@@ -70,10 +83,18 @@ struct GallerySessionDetailView: View {
             )
         }
         .sheet(isPresented: $showShareSheet) {
-            GalleryShareSheet(
-                images: processedImages,
-                sessionID: session.id
-            )
+            if session.hasGIF, let data = gifData {
+                GalleryShareSheet(
+                    images: [],
+                    sessionID: session.id,
+                    gifData: data
+                )
+            } else {
+                GalleryShareSheet(
+                    images: processedImages,
+                    sessionID: session.id
+                )
+            }
         }
     }
 
@@ -86,8 +107,15 @@ struct GallerySessionDetailView: View {
                 .foregroundColor(.white)
 
             HStack(spacing: 16) {
-                Label("\(session.photoCount) photo\(session.photoCount == 1 ? "" : "s")",
-                      systemImage: "photo")
+                if session.hasGIF {
+                    Label(
+                        session.captureMode == "boomerangGIF" ? "Boomerang" : "Burst GIF",
+                        systemImage: "arrow.2.squarepath"
+                    )
+                } else {
+                    Label("\(session.photoCount) photo\(session.photoCount == 1 ? "" : "s")",
+                          systemImage: "photo")
+                }
                 if session.filterName != "natural" {
                     Label(session.filterName.capitalized, systemImage: "camera.filters")
                 }
@@ -97,6 +125,28 @@ struct GallerySessionDetailView: View {
             }
             .font(.caption)
             .foregroundColor(.white.opacity(0.5))
+
+            if let data = gifData {
+                Text(formatBytes(data.count))
+                    .font(.caption2)
+                    .foregroundColor(.white.opacity(0.3))
+            }
+        }
+    }
+
+    // MARK: - GIF Playback
+
+    private var gifPlayback: some View {
+        Group {
+            if !gifFrames.isEmpty {
+                AnimatedGIFView(
+                    frames: gifFrames.map(\.image),
+                    frameDuration: gifFrames.first?.delay ?? 0.08
+                )
+                .aspectRatio(contentMode: .fit)
+                .cornerRadius(12)
+                .shadow(color: .black.opacity(0.4), radius: 10)
+            }
         }
     }
 
@@ -118,38 +168,42 @@ struct GallerySessionDetailView: View {
 
     private var actionButtons: some View {
         VStack(spacing: 12) {
-            // Save to Photos
-            Button(action: saveToPhotos) {
-                Label(
-                    savedToPhotos ? "Saved to Photos!" : "Save to Photos",
-                    systemImage: savedToPhotos ? "checkmark.circle.fill" : "square.and.arrow.down"
-                )
-                .font(.headline)
-                .foregroundColor(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .background(savedToPhotos ? Color.green : Color.blue)
-                .cornerRadius(14)
+            // Save to Photos (only for non-GIF, or save first GIF frame)
+            if !session.hasGIF {
+                Button(action: saveToPhotos) {
+                    Label(
+                        savedToPhotos ? "Saved to Photos!" : "Save to Photos",
+                        systemImage: savedToPhotos ? "checkmark.circle.fill" : "square.and.arrow.down"
+                    )
+                    .font(.headline)
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(savedToPhotos ? Color.green : Color.blue)
+                    .cornerRadius(14)
+                }
+                .disabled(savedToPhotos)
             }
-            .disabled(savedToPhotos)
 
             HStack(spacing: 12) {
-                // Re-Print
-                Button(action: { showPrintPreview = true }) {
-                    Label("Print", systemImage: "printer.fill")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(Color.blue.opacity(0.25))
-                        .cornerRadius(12)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12)
-                                .stroke(Color.blue.opacity(0.4), lineWidth: 1)
-                        )
+                // Re-Print (photo only)
+                if !session.hasGIF {
+                    Button(action: { showPrintPreview = true }) {
+                        Label("Print", systemImage: "printer.fill")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(Color.blue.opacity(0.25))
+                            .cornerRadius(12)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color.blue.opacity(0.4), lineWidth: 1)
+                            )
+                    }
                 }
 
-                // Re-Share (QR + AirDrop)
+                // Re-Share (AirDrop)
                 Button(action: { showShareSheet = true }) {
                     Label("Share", systemImage: "square.and.arrow.up")
                         .font(.subheadline.weight(.medium))
@@ -178,21 +232,39 @@ struct GallerySessionDetailView: View {
         .padding(.top, 8)
     }
 
-    // MARK: - Actions
+    // MARK: - Loading
 
-    private func loadPhotos() {
+    private func loadContent() {
         isLoading = true
         let store = galleryStore
         let sid = session.id
         let count = session.photoCount
+        let isGIF = session.hasGIF
 
         Task.detached {
-            let loaded: [UIImage] = (0..<count).compactMap { i in
-                store.loadProcessedImage(sessionID: sid, index: i)
-            }
-            await MainActor.run {
-                processedImages = loaded
-                isLoading = false
+            if isGIF {
+                // Load GIF data and extract frames
+                if let data = store.loadGIFData(sessionID: sid) {
+                    let frames = GIFEncoder.extractFrames(from: data)
+                    await MainActor.run {
+                        gifData = data
+                        gifFrames = frames
+                        isLoading = false
+                    }
+                } else {
+                    await MainActor.run {
+                        isLoading = false
+                    }
+                }
+            } else {
+                // Load processed images
+                let loaded: [UIImage] = (0..<count).compactMap { i in
+                    store.loadProcessedImage(sessionID: sid, index: i)
+                }
+                await MainActor.run {
+                    processedImages = loaded
+                    isLoading = false
+                }
             }
         }
     }
@@ -221,11 +293,17 @@ struct GallerySessionDetailView: View {
         formatter.timeStyle = .short
         return formatter.string(from: date)
     }
+
+    private func formatBytes(_ bytes: Int) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: Int64(bytes))
+    }
 }
 
 // MARK: - Gallery Share Sheet
 
-/// Share sheet for re-sharing gallery photos via AirDrop or other channels.
+/// Share sheet for re-sharing gallery photos or GIFs via AirDrop.
 ///
 /// Uses a transparent host UIViewController so `popoverPresentationController`
 /// has a valid `sourceView` on iPad (prevents crash).
@@ -233,6 +311,7 @@ struct GalleryShareSheet: UIViewControllerRepresentable {
 
     let images: [UIImage]
     let sessionID: UUID
+    var gifData: Data? = nil
 
     func makeUIViewController(context: Context) -> UIViewController {
         let host = UIViewController()
@@ -241,15 +320,25 @@ struct GalleryShareSheet: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
-        // Only present once
         guard uiViewController.presentedViewController == nil else { return }
 
+        // Share GIF file URL or images
+        let items: [Any]
+        if let data = gifData {
+            // Write GIF to temp file so AirDrop sends a proper .gif file
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("photobooth-\(sessionID.uuidString.prefix(8)).gif")
+            try? data.write(to: tempURL)
+            items = [tempURL]
+        } else {
+            items = images
+        }
+
         let activityVC = UIActivityViewController(
-            activityItems: images,
+            activityItems: items,
             applicationActivities: nil
         )
 
-        // iPad requires popover config — sourceView prevents crash
         if let popover = activityVC.popoverPresentationController {
             popover.sourceView = uiViewController.view
             popover.sourceRect = CGRect(

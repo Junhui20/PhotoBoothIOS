@@ -4,6 +4,7 @@ import Combine
 /// Manages the photobooth session state machine.
 ///
 /// Flow: attract → ready → countdown → capturing → processing → review → sharing → complete → attract
+/// GIF flow: attract → ready → countdown → capturing (burst) → processing (encode) → review → sharing → complete → attract
 @MainActor
 final class SessionViewModel: ObservableObject {
 
@@ -16,14 +17,24 @@ final class SessionViewModel: ObservableObject {
     @Published var selectedBackground: BackgroundOption = BackgroundOption.allOptions[0]
     @Published var config = SessionConfig()
 
+    // GIF capture state
+    @Published var capturedGIFFrames: [UIImage] = []
+    @Published var capturedGIFData: Data?
+
     let cameraManager: CameraManager
     let galleryStore: GalleryStore
+    let profileManager: EventProfileManager
     private var countdownTimer: Timer?
     private var autoReturnTimer: Timer?
 
-    init(cameraManager: CameraManager, galleryStore: GalleryStore) {
+    // GIF services
+    private let burstService = BurstCaptureService()
+    private let gifEncoder = GIFEncoder()
+
+    init(cameraManager: CameraManager, galleryStore: GalleryStore, profileManager: EventProfileManager) {
         self.cameraManager = cameraManager
         self.galleryStore = galleryStore
+        self.profileManager = profileManager
     }
 
     nonisolated deinit {
@@ -39,12 +50,17 @@ final class SessionViewModel: ObservableObject {
     }
 
     /// Start a new session: attract → ready → countdown.
-    /// Only starts if camera is connected.
+    /// Only starts if camera is connected. Loads config from active profile.
     func startSession() {
         guard phase == .attract else { return }
         guard isCameraReady else { return }
 
+        // Load config from active event profile
+        config = profileManager.activeProfile.config
+
         capturedPhotos = []
+        capturedGIFFrames = []
+        capturedGIFData = nil
         currentPhotoIndex = 0
         retakeCount = 0
 
@@ -64,18 +80,22 @@ final class SessionViewModel: ObservableObject {
         stopCountdownTimer()
         stopAutoReturnTimer()
         capturedPhotos = []
+        capturedGIFFrames = []
+        capturedGIFData = nil
         withAnimation(.easeInOut(duration: 0.4)) {
             phase = .attract
         }
     }
 
-    /// Retake: review → attract (full restart).
+    /// Retake: review → countdown restart.
     func retakePhoto() {
         guard phase == .review, config.allowRetake, retakeCount < config.maxRetakes else { return }
 
         retakeCount += 1
         stopAutoReturnTimer()
         capturedPhotos = []
+        capturedGIFFrames = []
+        capturedGIFData = nil
         currentPhotoIndex = 0
 
         HapticManager.light()
@@ -86,7 +106,8 @@ final class SessionViewModel: ObservableObject {
 
     /// Accept captured photos with selected filter and background: review → sharing.
     ///
-    /// Processes photos once and uses the results for both camera roll save and gallery storage.
+    /// For photo mode: processes photos and saves to camera roll + gallery.
+    /// For GIF mode: saves GIF data to gallery.
     func acceptPhotos(
         filter: PhotoFilter = .natural,
         background: BackgroundOption = BackgroundOption.allOptions[0]
@@ -98,44 +119,10 @@ final class SessionViewModel: ObservableObject {
         selectedBackground = background
         HapticManager.success()
 
-        // Process photos once — save to camera roll (if enabled) AND gallery
-        let photosCopy = capturedPhotos
-        let bgType = background.type
-        let saveToPhotos = config.autoSaveToPhotos
-        let store = galleryStore
-
-        Task {
-            let pipeline = ProcessingPipeline()
-            var displayImages: [UIImage] = []
-            var shareImages: [UIImage] = []
-
-            for photo in photosCopy {
-                if let output = try? await pipeline.process(
-                    photo: photo,
-                    filter: filter,
-                    background: background.isOriginal ? nil : bgType
-                ) {
-                    displayImages.append(output.displayImage)
-                    shareImages.append(output.shareImage)
-                } else if let fallback = pipeline.applyFilterOnly(to: photo, filter: filter) {
-                    displayImages.append(fallback)
-                    shareImages.append(pipeline.resizeForSharing(fallback, maxDimension: 1920))
-                }
-            }
-
-            // Save to camera roll if enabled
-            if saveToPhotos {
-                PhotoLibraryHelper.saveMultipleToPhotos(displayImages)
-            }
-
-            // Save to gallery storage
-            await store.saveSession(
-                photos: photosCopy,
-                processedImages: displayImages,
-                shareImages: shareImages,
-                filter: filter,
-                background: background
-            )
+        if config.captureMode.isGIF {
+            acceptGIF()
+        } else {
+            acceptPhotoCapture(filter: filter, background: background)
         }
 
         withAnimation(.easeInOut(duration: 0.4)) {
@@ -160,13 +147,75 @@ final class SessionViewModel: ObservableObject {
                 phase = .attract
             }
             capturedPhotos = []
+            capturedGIFFrames = []
+            capturedGIFData = nil
+        }
+    }
+
+    // MARK: - Photo Accept (existing flow)
+
+    private func acceptPhotoCapture(filter: PhotoFilter, background: BackgroundOption) {
+        let photosCopy = capturedPhotos
+        let bgType = background.type
+        let saveToPhotos = config.autoSaveToPhotos
+        let store = galleryStore
+
+        Task {
+            let pipeline = ProcessingPipeline()
+            var displayImages: [UIImage] = []
+            var shareImages: [UIImage] = []
+
+            for photo in photosCopy {
+                if let output = try? await pipeline.process(
+                    photo: photo,
+                    filter: filter,
+                    background: background.isOriginal ? nil : bgType
+                ) {
+                    displayImages.append(output.displayImage)
+                    shareImages.append(output.shareImage)
+                } else if let fallback = pipeline.applyFilterOnly(to: photo, filter: filter) {
+                    displayImages.append(fallback)
+                    shareImages.append(pipeline.resizeForSharing(fallback, maxDimension: 1920))
+                }
+            }
+
+            if saveToPhotos {
+                PhotoLibraryHelper.saveMultipleToPhotos(displayImages)
+            }
+
+            await store.saveSession(
+                photos: photosCopy,
+                processedImages: displayImages,
+                shareImages: shareImages,
+                filter: filter,
+                background: background
+            )
+        }
+    }
+
+    // MARK: - GIF Accept
+
+    private func acceptGIF() {
+        guard let gifData = capturedGIFData,
+              let firstFrame = capturedGIFFrames.first else { return }
+
+        let store = galleryStore
+        let mode = config.captureMode
+        let data = gifData
+
+        Task {
+            await store.saveGIFSession(
+                gifData: data,
+                thumbnailFrame: firstFrame,
+                captureMode: mode
+            )
         }
     }
 
     // MARK: - Countdown
 
     /// Start the countdown timer: 3, 2, 1 → capture.
-    /// Starts autofocus immediately so camera is focused when countdown reaches 0.
+    /// For photo mode: starts autofocus. For GIF mode: no pre-focus needed.
     func beginCountdown() {
         let startValue = (currentPhotoIndex > 0) ? 2 : config.countdownSeconds
         countdownValue = startValue
@@ -182,9 +231,11 @@ final class SessionViewModel: ObservableObject {
         }
         HapticManager.medium()
 
-        // Start autofocus during countdown — camera focuses while timer runs
-        Task {
-            await cameraManager.startPreFocus()
+        // Start autofocus during countdown (photo mode only)
+        if !config.captureMode.isGIF {
+            Task {
+                await cameraManager.startPreFocus()
+            }
         }
 
         countdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -207,9 +258,14 @@ final class SessionViewModel: ObservableObject {
             }
             HapticManager.medium()
         } else {
-            // Countdown reached 0 — fire shutter
+            // Countdown reached 0 — capture
             stopCountdownTimer()
-            performCapture()
+
+            if config.captureMode.isGIF {
+                performGIFCapture()
+            } else {
+                performCapture()
+            }
         }
     }
 
@@ -218,10 +274,9 @@ final class SessionViewModel: ObservableObject {
         countdownTimer = nil
     }
 
-    // MARK: - Capture
+    // MARK: - Photo Capture
 
     private func performCapture() {
-        // Show processing immediately — no delay before capture
         withAnimation(.easeIn(duration: 0.1)) {
             phase = .processing
         }
@@ -229,16 +284,11 @@ final class SessionViewModel: ObservableObject {
         Task {
             do {
                 let photo = try await cameraManager.capturePhoto(preFocused: true) { [weak self] in
-                    // PTP response = "command received", not "shutter fired"
-                    // Camera shutter fires ~150ms later — don't play iPad sound,
-                    // let the camera's own shutter sound handle audio feedback.
                     guard let self else { return }
                     HapticManager.heavy()
-                    // Brief flash effect
                     withAnimation(.easeIn(duration: 0.05)) {
                         self.phase = .capturing
                     }
-                    // Return to processing after flash
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                         withAnimation(.easeOut(duration: 0.1)) {
                             self.phase = .processing
@@ -250,18 +300,15 @@ final class SessionViewModel: ObservableObject {
 
                 let requiredPhotos = config.layoutMode.photoCount
                 if capturedPhotos.count < requiredPhotos {
-                    // Multi-photo: show brief indicator then next countdown
                     try? await Task.sleep(for: .milliseconds(500))
                     beginCountdown()
                 } else {
-                    // All photos captured — show review
                     withAnimation(.easeInOut(duration: 0.4)) {
                         phase = .review
                     }
                     startAutoReturnTimer()
                 }
             } catch {
-                // Capture failed — show review with whatever we have, or return to attract
                 if capturedPhotos.isEmpty {
                     withAnimation(.easeInOut(duration: 0.4)) {
                         phase = .attract
@@ -276,9 +323,60 @@ final class SessionViewModel: ObservableObject {
         }
     }
 
+    // MARK: - GIF Capture
+
+    private func performGIFCapture() {
+        withAnimation(.easeIn(duration: 0.1)) {
+            phase = .capturing
+        }
+        HapticManager.heavy()
+
+        Task {
+            // Burst-capture frames from live view
+            let result = await burstService.captureFrames(
+                from: cameraManager,
+                frameCount: config.gifFrameCount,
+                intervalMs: config.gifFrameInterval
+            )
+
+            guard !result.frames.isEmpty else {
+                withAnimation(.easeInOut(duration: 0.4)) {
+                    phase = .attract
+                }
+                return
+            }
+
+            capturedGIFFrames = result.frames
+
+            withAnimation(.easeIn(duration: 0.2)) {
+                phase = .processing
+            }
+
+            // Encode GIF on background thread
+            let frames = result.frames
+            let delay = result.interval
+            let isBoomerang = config.captureMode == .boomerangGIF
+            let encoder = gifEncoder
+
+            let gifData = await Task.detached(priority: .userInitiated) {
+                encoder.encodeWithSizeLimit(
+                    frames: frames,
+                    frameDelay: delay,
+                    boomerang: isBoomerang
+                )
+            }.value
+
+            capturedGIFData = gifData
+
+            withAnimation(.easeInOut(duration: 0.4)) {
+                phase = .review
+            }
+            startAutoReturnTimer()
+        }
+    }
+
     // MARK: - Auto Return Timer
 
-    /// Start inactivity timer — returns to attract after timeout.
     func startAutoReturnTimer() {
         stopAutoReturnTimer()
         autoReturnTimer = Timer.scheduledTimer(
@@ -291,7 +389,6 @@ final class SessionViewModel: ObservableObject {
         }
     }
 
-    /// Reset the auto-return timer (on any user interaction).
     func resetAutoReturnTimer() {
         if autoReturnTimer != nil {
             startAutoReturnTimer()

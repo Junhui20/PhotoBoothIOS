@@ -18,20 +18,28 @@ struct PhotoBoothIOSApp: App {
     @StateObject private var wifiShareServer = WiFiShareServer()
     // Gallery storage — persists sessions to disk for browsing and re-sharing
     @StateObject private var galleryStore = GalleryStore()
+    // Event profile management — branding and session config per event
+    @StateObject private var profileManager = EventProfileManager()
 
     var body: some Scene {
         WindowGroup {
-            SessionRootView(cameraManager: cameraManager, galleryStore: galleryStore)
-                .environmentObject(cameraManager)
-                .environmentObject(printService)
-                .environmentObject(wifiShareServer)
-                .environmentObject(galleryStore)
-                .preferredColorScheme(.dark)
-                .statusBarHidden(true)
-                .onAppear {
-                    printService.restoreDefaults()
-                    galleryStore.loadSessions()
-                }
+            SessionRootView(
+                cameraManager: cameraManager,
+                galleryStore: galleryStore,
+                profileManager: profileManager
+            )
+            .environmentObject(cameraManager)
+            .environmentObject(printService)
+            .environmentObject(wifiShareServer)
+            .environmentObject(galleryStore)
+            .environmentObject(profileManager)
+            .preferredColorScheme(.dark)
+            .statusBarHidden(true)
+            .onAppear {
+                printService.restoreDefaults()
+                galleryStore.loadSessions()
+                profileManager.loadProfiles()
+            }
         }
     }
 }
@@ -42,10 +50,11 @@ struct PhotoBoothIOSApp: App {
 struct SessionRootView: View {
     @StateObject private var sessionVM: SessionViewModel
 
-    init(cameraManager: CameraManager, galleryStore: GalleryStore) {
+    init(cameraManager: CameraManager, galleryStore: GalleryStore, profileManager: EventProfileManager) {
         _sessionVM = StateObject(wrappedValue: SessionViewModel(
             cameraManager: cameraManager,
-            galleryStore: galleryStore
+            galleryStore: galleryStore,
+            profileManager: profileManager
         ))
     }
 
@@ -53,4 +62,3 @@ struct SessionRootView: View {
         SessionContainerView(sessionVM: sessionVM)
     }
 }
-

@@ -4,11 +4,13 @@ import SwiftUI
 ///
 /// Processes photos on appear (filter + background removal), then serves them
 /// via a local WiFi server for QR code download and AirDrop sharing.
+/// For GIF sessions, shares the GIF data directly.
 struct ShareView: View {
 
     let photos: [CapturedPhoto]
     let selectedFilter: PhotoFilter
     let selectedBackground: BackgroundOption
+    var gifData: Data? = nil
     let onDone: () -> Void
 
     @EnvironmentObject var printService: PrintService
@@ -73,7 +75,7 @@ struct ShareView: View {
             // AirDrop presenter — zero-size, anchored to button rect
             if showAirDrop {
                 AirDropActivityView(
-                    images: shareImages.isEmpty ? processedImages : shareImages,
+                    activityItems: airDropItems,
                     sourceRect: airDropButtonRect,
                     onComplete: { completed in
                         showAirDrop = false
@@ -95,7 +97,7 @@ struct ShareView: View {
         }
         .onAppear {
             processPhotos()
-            if printService.autoPrint && printService.defaultPrinter != nil {
+            if !isGIFMode && printService.autoPrint && printService.defaultPrinter != nil {
                 triggerAutoPrint()
             }
         }
@@ -103,8 +105,10 @@ struct ShareView: View {
 
     // MARK: - Header
 
+    private var isGIFMode: Bool { gifData != nil }
+
     private var header: some View {
-        Text("Share Your Photo")
+        Text(isGIFMode ? "Share Your GIF" : "Share Your Photo")
             .font(.system(size: 32, weight: .bold, design: .rounded))
             .foregroundColor(.white)
     }
@@ -113,14 +117,38 @@ struct ShareView: View {
 
     @ViewBuilder
     private var photoThumbnail: some View {
-        let displayImage = shareImages.last ?? processedImages.last ?? photos.last?.uiImage
-        if let image = displayImage {
-            Image(uiImage: image)
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(maxHeight: 280)
-                .cornerRadius(12)
-                .shadow(radius: 20)
+        if isGIFMode, let data = gifData {
+            // For GIF, show animated playback of the first frame
+            let frames = GIFEncoder.extractFrames(from: data)
+            if let firstImage = frames.first?.image {
+                Image(uiImage: firstImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxHeight: 280)
+                    .cornerRadius(12)
+                    .shadow(radius: 20)
+                    .overlay(
+                        Text("GIF")
+                            .font(.caption2.weight(.bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.purple.opacity(0.8))
+                            .cornerRadius(6)
+                            .padding(8),
+                        alignment: .topTrailing
+                    )
+            }
+        } else {
+            let displayImage = shareImages.last ?? processedImages.last ?? photos.last?.uiImage
+            if let image = displayImage {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxHeight: 280)
+                    .cornerRadius(12)
+                    .shadow(radius: 20)
+            }
         }
     }
 
@@ -128,7 +156,7 @@ struct ShareView: View {
 
     @ViewBuilder
     private var shareContent: some View {
-        if isProcessing && processedImages.isEmpty {
+        if !isGIFMode && isProcessing && processedImages.isEmpty {
             VStack(spacing: 12) {
                 ProgressView()
                     .tint(.white)
@@ -143,9 +171,11 @@ struct ShareView: View {
                 // Save to Photos — full-width primary button
                 saveToPhotosButton
 
-                // Three action buttons
+                // Action buttons — hide Print for GIF mode
                 HStack(spacing: 16) {
-                    printButton
+                    if !isGIFMode {
+                        printButton
+                    }
                     qrCodeButton
                     airDropButton
                 }
@@ -205,7 +235,7 @@ struct ShareView: View {
             color: airDropShared ? .green : .cyan,
             isActive: showAirDrop
         ) {
-            guard !shareImages.isEmpty || !processedImages.isEmpty else { return }
+            guard isGIFMode ? (gifData != nil) : (!shareImages.isEmpty || !processedImages.isEmpty) else { return }
             HapticManager.light()
             showAirDrop = true
         }
@@ -261,9 +291,30 @@ struct ShareView: View {
         ]
     }
 
+    // MARK: - AirDrop Items
+
+    /// Items to share via AirDrop — GIF file URL for GIF mode, images otherwise.
+    private var airDropItems: [Any] {
+        if isGIFMode, let data = gifData {
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("photobooth-share.gif")
+            try? data.write(to: tempURL)
+            return [tempURL]
+        } else {
+            let images: [UIImage] = shareImages.isEmpty ? processedImages : shareImages
+            return images
+        }
+    }
+
     // MARK: - Photo Processing
 
     private func processPhotos() {
+        // GIF mode — no image processing needed, just start WiFi server
+        if isGIFMode {
+            startWiFiServer()
+            return
+        }
+
         let isNatural = (selectedFilter.id == "natural")
         let isOriginalBg = selectedBackground.isOriginal
 
@@ -312,10 +363,24 @@ struct ShareView: View {
     // MARK: - WiFi Server
 
     private func startWiFiServer() {
+        let sessionID = UUID().uuidString
+
+        // GIF mode — serve the GIF data directly
+        if isGIFMode, let data = gifData {
+            wifiServer.start(
+                photos: [data],
+                sessionID: sessionID,
+                eventName: "PhotoBooth Pro",
+                hashtag: nil,
+                isGIF: true
+            )
+            return
+        }
+
+        // Photo mode — serve JPEG data
         let images = shareImages.isEmpty ? processedImages : shareImages
         guard !images.isEmpty else { return }
 
-        let sessionID = UUID().uuidString
         var jpegDataArray: [Data] = []
         for image in images {
             if let jpeg = image.jpegData(compressionQuality: 0.88) {
@@ -335,6 +400,24 @@ struct ShareView: View {
     // MARK: - Actions
 
     private func saveToPhotos() {
+        if isGIFMode, let data = gifData {
+            // Save GIF to temp file, then save to Photos
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("photobooth-\(UUID().uuidString).gif")
+            do {
+                try data.write(to: tempURL)
+                PhotoLibraryHelper.saveGIFToPhotos(tempURL) { success in
+                    if success {
+                        HapticManager.success()
+                        saved = true
+                    }
+                }
+            } catch {
+                // GIF write failed — skip save
+            }
+            return
+        }
+
         let images = processedImages.isEmpty ? photos.compactMap(\.uiImage) : processedImages
         PhotoLibraryHelper.saveMultipleToPhotos(images) { success in
             if success {
